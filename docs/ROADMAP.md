@@ -50,11 +50,11 @@
 
 ## Phase 2 — M1: Web MVP (usable by friends, browser-only)
 
-- [ ] **2.1 Server skeleton**
+- [x] **2.1 Server skeleton** *(done 2026-08-26 — image 27.7 MB, /healthz verified in-container)*
   - axum app: config from env, `/healthz`, static file serving, tracing; multi-stage Dockerfile.
   - **Accept:** `curl /healthz` → 200 locally and inside the built image; image < 50 MB.
   - **Guards:** binds localhost-appropriate port from env (Caddy fronts it in prod); stateless.
-- [ ] **2.2 Session/token API**
+- [x] **2.2 Session/token API** *(done 2026-08-26 — grants asserted by 5 integration tests; both tokens accepted by local LiveKit /rtc/validate)*
   - `POST /api/sessions` → room id (short, unguessable), publisher JWT (publish-only, room-scoped); `GET /api/sessions/:id/token` → subscriber JWT (subscribe-only, short TTL); LiveKit room as source of truth (no DB); `ts-rs`-generated request/response types consumed by `core`.
   - **Accept:** curl flow against local LiveKit: create session, mint viewer token, both tokens carry exactly the intended grants (decoded + asserted in an integration test).
   - **Guards:** viewer tokens can never publish; token TTL ≤ minutes (rejoin re-mints); room ids from CSPRNG.

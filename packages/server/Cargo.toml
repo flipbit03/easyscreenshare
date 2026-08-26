@@ -7,4 +7,17 @@ publish = false
 
 [dependencies]
 axum = "0.8"
+livekit-api = { version = "0.6.4", default-features = false, features = ["access-token"] }
+rand = "0.10.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+tower-http = { version = "0.7.0", features = ["fs", "trace"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+ts-rs = { version = "12.0.1", features = ["serde-compat"] }
+
+[dev-dependencies]
+base64 = "0.23.1"
+http-body-util = "0.1.5"
+tower = { version = "0.5.3", features = ["util"] }
