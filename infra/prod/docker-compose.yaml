@@ -1,0 +1,36 @@
+# Production stack on outpost — lives at ~easyscreenshare/easyscreenshare/.
+# Pushed by .github/workflows/deploy.yml; the folder is disposable and
+# self-heals on every deploy. Secrets come from .env (written by the deploy
+# workflow from GitHub secrets — never committed).
+#
+# Routing (shaped by my_infra's easyscreenshare.yaml playbook):
+#   easyscreenshare.flipbit03.com    → Caddy → 127.0.0.1:8090 (app)
+#   lk.easyscreenshare.flipbit03.com → Caddy → 127.0.0.1:7880 (LiveKit WSS)
+#   7881/tcp, 7882/udp, 3479/udp     → direct (media/TURN, opened in iac/vultr)
+services:
+  app:
+    image: ghcr.io/flipbit03/easyscreenshare:latest
+    restart: unless-stopped
+    environment:
+      PORT: "8090"
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
+      LIVEKIT_PUBLIC_URL: wss://lk.easyscreenshare.flipbit03.com
+      PUBLIC_BASE_URL: https://easyscreenshare.flipbit03.com
+    ports:
+      - "127.0.0.1:8090:8090"
+
+  livekit:
+    image: livekit/livekit-server:v1.13.6
+    restart: unless-stopped
+    command: --config /etc/livekit.yaml
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro
+    environment:
+      # "APIKey: secret" — overrides config-file keys, keeps them out of git
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}"
+    ports:
+      - "127.0.0.1:7880:7880" # WSS signaling — only via Caddy
+      - "7881:7881" # ICE over TCP fallback
+      - "7882:7882/udp" # WebRTC media (muxed UDP)
+      - "3479:3479/udp" # TURN/UDP (3478 belongs to headscale)

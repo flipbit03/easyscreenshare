@@ -1,0 +1,13 @@
+# LiveKit production config for outpost. API keys are NOT here — they arrive
+# via the LIVEKIT_KEYS env var (see docker-compose.yaml).
+port: 7880
+rtc:
+  tcp_port: 7881
+  udp_port: 7882 # single muxed UDP port instead of a range
+  use_external_ip: false # public IP is bound directly on the interface
+turn:
+  enabled: true
+  udp_port: 3479 # 3478 is taken by headscale's DERP/STUN
+  # TURN/TLS on 5349 is a later step (needs cert files; firewall already open)
+logging:
+  level: info

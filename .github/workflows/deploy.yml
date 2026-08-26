@@ -1,0 +1,86 @@
+# GitHub RELEASES deploy to prod — main is for merging, releases are for
+# users. Cut one with `gh release create vX.Y.Z --generate-notes` (or the UI);
+# workflow_dispatch is the manual escape hatch. The server-side folder is
+# disposable: every run recreates ~easyscreenshare/easyscreenshare from
+# nothing. GHCR auth uses the job-scoped GITHUB_TOKEN on both ends — no
+# long-lived registry credential exists anywhere.
+name: Deploy
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/flipbit03/easyscreenshare:latest
+            ghcr.io/flipbit03/easyscreenshare:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Push compose + livekit config (self-healing — creates the dir)
+        uses: appleboy/scp-action@v1
+        with:
+          host: outpost.flipbit03.com
+          username: easyscreenshare
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          source: infra/prod/docker-compose.yaml,infra/prod/livekit.yaml
+          target: /home/easyscreenshare/easyscreenshare/
+          strip_components: 2
+
+      - name: Write env, pull and restart
+        uses: appleboy/ssh-action@v1
+        with:
+          host: outpost.flipbit03.com
+          username: easyscreenshare
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          command_timeout: 10m
+          envs: GHCR_TOKEN,LIVEKIT_API_KEY,LIVEKIT_API_SECRET
+          script: |
+            set -euo pipefail
+            cd ~/easyscreenshare
+            umask 077
+            printf 'LIVEKIT_API_KEY=%s\nLIVEKIT_API_SECRET=%s\n' "$LIVEKIT_API_KEY" "$LIVEKIT_API_SECRET" > .env
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u flipbit03 --password-stdin
+            docker compose pull -q
+            docker compose up -d
+            docker logout ghcr.io
+            docker image prune -f > /dev/null
+            # Gate on health, not hope.
+            for i in $(seq 1 30); do
+              if curl -sf -o /dev/null http://127.0.0.1:8090/healthz; then
+                echo "app healthy after ${i}s"
+                docker compose ps --format '{{.Name}} {{.Status}}'
+                exit 0
+              fi
+              sleep 1
+            done
+            echo "app never became healthy"; docker compose logs --tail 50; exit 1
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LIVEKIT_API_KEY: ${{ secrets.LIVEKIT_API_KEY }}
+          LIVEKIT_API_SECRET: ${{ secrets.LIVEKIT_API_SECRET }}
