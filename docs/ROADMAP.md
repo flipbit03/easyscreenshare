@@ -34,7 +34,7 @@
   - Minimal Electron app testing three device-id forms via the picker callback: `applicationLoopback:<pid>` (include), `restrictOwnAudioBrowserLoopback:<otherAppPid>` (exclude-arbitrary hypothesis → live "exclude Discord"), and two simultaneous loopback captures (crossfade toggling).
   - **Accept:** written verdict per id form (works / dead-silent / rejected) appended to `docs/research/04-audio-capture.md`; ARCHITECTURE decisions log updated with the chosen per-app strategy.
   - **Guards:** verify audio by RMS, not by track existence (silent-dead-stream trap, 04 §9.1).
-- [ ] **S2 60 fps tier end-to-end**
+- [ ] **S2 60 fps tier end-to-end** *(partial 2026-08-26, measured in PROD: per-layer fps caps enforce exactly (source 30 → h-layer 31/q-layer 16 per h1080fps30/h720fps15 config), qualityLimitationReason=none at 1080p through EWR, pipeline delivers source fps losslessly. Remaining: 60fps source + custom maxFramerate:60 encoding — needs the tier-config plumbing + a real 60fps capture)*
   - Web publisher → local LiveKit → viewer with custom encodings incl. `maxFramerate: 60` at 1080p/native; measure delivered fps at the viewer (`getStats`).
   - **Accept:** documented delivered-fps table (capture fps vs per-layer received fps); go/no-go on advertising a 60 fps tier; findings appended to research 01.
   - **Guards:** measure with `getStats`, not `track.getSettings()` (02 §3); test with real motion on screen.
@@ -76,11 +76,11 @@
   - `easyscreenshare` user (docker group) + deploy key + Caddy vhosts (`easyscreenshare.flipbit03.com` → app port, `lk.easyscreenshare.flipbit03.com` → 7880) in a new `easyscreenshare.yaml` playbook, following `2048wars.yaml` exactly. DNS + firewall ports already added in my_infra `iac/vultr` (pending `terraform apply`).
   - **Accept:** playbook idempotent (second run: no changes); vhosts serve 502 (nothing deployed yet) over valid TLS.
   - **Guards:** **do not touch UDP 3478** (headscale DERP) or 443 (Caddy); playbook only shapes what survives redeploys.
-- [ ] **3.2 Production compose + LiveKit config**
+- [x] **3.2 Production compose + LiveKit config** *(done 2026-08-26 — livekit v1.13.6 on host networking (bridge advertises container IP — documented trap hit & fixed); media verified flowing via 173.199.119.220:7882)*
   - `infra/prod/`: app + livekit-server; LiveKit: muxed UDP 7882, ICE/TCP 7881, TURN on non-3478 port, keys via env; DNS records.
   - **Accept:** deployed by hand once; public viewer page loads; wss signaling connects; media flows from a home publisher to an external viewer.
   - **Guards:** verify Vultr firewall passes UDP 7882 (open question from infra review); LiveKit config file in repo, secrets out.
-- [ ] **3.3 GHA deploy pipeline**
+- [x] **3.3 GHA deploy pipeline** *(done 2026-08-26 — 4 successful deploys via workflow_dispatch incl. config-only redeploys; health gate works)*
   - Build → GHCR → scp compose → ssh `docker compose up` → `/healthz` gate, keyed to releases + `workflow_dispatch` (2048wars pattern).
   - **Accept:** one release deploys green end-to-end; re-deploy of previous tag works (rollback path).
 - [ ] **3.4 Real-world Brazil test**
