@@ -29,8 +29,8 @@ services:
     environment:
       # "APIKey: secret" — overrides config-file keys, keeps them out of git
       LIVEKIT_KEYS: "${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}"
-    ports:
-      - "127.0.0.1:7880:7880" # WSS signaling — only via Caddy
-      - "7881:7881" # ICE over TCP fallback
-      - "7882:7882/udp" # WebRTC media (muxed UDP)
-      - "3479:3479/udp" # TURN/UDP (3478 belongs to headscale)
+    # Host networking is required: with a bridge network LiveKit advertises its
+    # container IP (172.x) as the ICE candidate and media can never connect.
+    # Exposure is governed by the Vultr firewall: 7881/tcp, 7882/udp, 3479/udp
+    # are open; 7880 (signaling) stays unreachable except via Caddy.
+    network_mode: host
