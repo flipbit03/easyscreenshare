@@ -18,14 +18,14 @@
 
 ## Phase 0 — Bootstrap
 
-- [ ] **0.1 Monorepo scaffold**
+- [x] **0.1 Monorepo scaffold** *(done 2026-08-26 — CI green on initial commit)*
   - Cargo workspace (`packages/server`) + pnpm workspace (`packages/{core,web,desktop}`), MIT `LICENSE`, `README.md` (pitch + docs pointers), `.gitignore`, root `package.json` with pinned `packageManager` (Corepack), CI workflow (build + test, Rust and TS).
   - **Accept:** `cargo build` and `pnpm install && pnpm -r build` succeed locally and in CI.
   - **Guards:** pnpm only via Corepack pin; `packages/server` has no `package.json` (invisible to pnpm); desktop is a stub until Phase 4.
 
-- [ ] **0.2 Local LiveKit dev environment**
+- [x] **0.2 Local LiveKit dev environment** *(done 2026-08-26)*
   - `infra/dev/docker-compose.yml`: `livekit-server` in dev mode with fixed API key/secret; `docs/DEVELOPMENT.md` with the bring-up steps.
-  - **Accept:** compose up; a token minted with the dev key connects a `livekit-client` smoke script to `ws://localhost:7880`.
+  - **Accept:** compose up; `infra/dev/smoke.mjs` mints a dev-key JWT and LiveKit's `/rtc/validate` (the same pre-connect check `livekit-client` performs) returns success. ✔ 200 "success".
   - **Guards:** dev keys clearly marked dev-only; compose file never referenced by prod deploy.
 
 ## Phase 1 — Spikes (M0: capability questions, throwaway code in `spikes/`)

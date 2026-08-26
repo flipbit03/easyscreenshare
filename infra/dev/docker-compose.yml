@@ -1,0 +1,12 @@
+# Local development LiveKit — DEV ONLY, never referenced by any deploy.
+# Dev mode uses the well-known credentials  API key: devkey  /  secret: secret
+# Bring up:   docker compose -f infra/dev/docker-compose.yml up -d
+# Smoke test: node infra/dev/smoke.mjs
+services:
+  livekit:
+    image: livekit/livekit-server:latest
+    command: --dev --bind 0.0.0.0
+    ports:
+      - "7880:7880" # WebSocket signaling + HTTP
+      - "7881:7881" # ICE over TCP fallback
+      - "7882:7882/udp" # WebRTC media (muxed UDP)
