@@ -36,7 +36,7 @@ export default function Publisher() {
       const handle = await startScreenShare({
         livekitUrl: session.livekitUrl,
         token: session.publisherToken,
-        audio: audioCapable && !testSource,
+        audio: audioCapable,
         audioPreset: preset,
         testSource,
       });
@@ -146,6 +146,12 @@ export default function Publisher() {
             <span className="live-hint">
               {copied ? "Link copied — paste it to your friends" : "Send this link to your friends"}
             </span>
+            {gotAudio && (
+              <span className="audio-chip">
+                <span className="audio-chip-dot" aria-hidden="true" />
+                system audio on
+              </span>
+            )}
           </div>
 
           <div className="sharebox">

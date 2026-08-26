@@ -41,6 +41,23 @@ function createCanvasTestStream(): MediaStream {
   const canvas = document.createElement("canvas");
   canvas.width = 1920;
   canvas.height = 1080;
+  // Synthetic test tone so audio paths (publish, mute/unmute, presets,
+  // delivery stats) are exercisable in headless e2e. 440 Hz, gently pulsed.
+  const ac = new AudioContext({ sampleRate: 48000 });
+  void ac.resume(); // caller's click is the required gesture
+  const osc = ac.createOscillator();
+  osc.frequency.value = 440;
+  const gain = ac.createGain();
+  gain.gain.value = 0.15;
+  const lfo = ac.createOscillator();
+  lfo.frequency.value = 2;
+  const lfoGain = ac.createGain();
+  lfoGain.gain.value = 0.1;
+  lfo.connect(lfoGain).connect(gain.gain);
+  const dest = ac.createMediaStreamDestination();
+  osc.connect(gain).connect(dest);
+  osc.start();
+  lfo.start();
   const ctx = canvas.getContext("2d")!;
   let frame = 0;
   const draw = () => {
@@ -55,7 +72,9 @@ function createCanvasTestStream(): MediaStream {
     requestAnimationFrame(draw);
   };
   draw();
-  return canvas.captureStream(60);
+  const stream = canvas.captureStream(60);
+  stream.addTrack(dest.stream.getAudioTracks()[0]);
+  return stream;
 }
 
 export interface PublishHandle {
