@@ -3,14 +3,10 @@
 **Click the tray icon → pick what to share → a link is in your clipboard.
 Anyone who opens the link watches in their browser. That's it.**
 
-Born the week Brazil lost Discord screensharing (ANPD order, August 2026).
-This replaces exactly that one feature — not Discord: voice chat stays wherever
-you already have it.
-
 - **Publisher**: an Electron tray app (Windows/Linux/macOS) — or straight from
   a Chromium browser, no install, with reduced audio features.
 - **Viewers**: any browser, no account, no install, watch-only.
-- **Quality**: Discord-style tiers — 720p/1080p/native × 15/30/60 fps,
+- **Quality**: 720p/1080p/native × 15/30/60 fps tiers,
   viewer-selectable and bandwidth-adaptive (WebRTC simulcast via LiveKit).
 - **Audio is the point**: system audio on all three OSes, music-grade stereo
   Opus (up to 256 kbps, voice-processing off), sharer-side quality presets,

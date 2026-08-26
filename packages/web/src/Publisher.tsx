@@ -157,8 +157,7 @@ export default function Publisher() {
               “also share system audio” in the dialog.
             </li>
             <li>
-              <b>The link lands in your clipboard.</b> Paste it anywhere —
-              Discord still does text just fine.
+              <b>The link lands in your clipboard.</b> Paste it anywhere.
             </li>
             <li>
               <b>They're watching.</b> Any browser, no install, adaptive
@@ -249,7 +248,7 @@ export default function Publisher() {
       <footer className="foot">
         <a href="https://github.com/flipbit03/easyscreenshare">open source</a>
         <span aria-hidden="true">·</span>
-        <span>made in Brazil, where Discord can't share screens anymore</span>
+        <span>MIT licensed</span>
       </footer>
     </div>
   );
