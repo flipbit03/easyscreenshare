@@ -58,11 +58,11 @@
   - `POST /api/sessions` → room id (short, unguessable), publisher JWT (publish-only, room-scoped); `GET /api/sessions/:id/token` → subscriber JWT (subscribe-only, short TTL); LiveKit room as source of truth (no DB); `ts-rs`-generated request/response types consumed by `core`.
   - **Accept:** curl flow against local LiveKit: create session, mint viewer token, both tokens carry exactly the intended grants (decoded + asserted in an integration test).
   - **Guards:** viewer tokens can never publish; token TTL ≤ minutes (rejoin re-mints); room ids from CSPRNG.
-- [ ] **2.3 Viewer page**
+- [ ] **2.3 Viewer page** *(built 2026-08-26; automated Chrome e2e ✓: video plays, quality selector switches layers (720×808→944×1060), adaptive initial pick, viewer count, "stream ended" propagation. Pending for tick: Firefox/Safari check + unmute flow with a real audio track)*
   - React + Vite + `livekit-client` (+ `@livekit/components-react` where it helps): join via `/s/:id`, render video + audio, quality selector (Auto/1080/720/Low), volume, fullscreen, viewer count, "stream ended" state.
   - **Accept:** manual e2e vs a test publisher; quality selector visibly switches layers; `adaptiveStream` reacts to window resize; works in Chrome, Firefox, Safari.
   - **Guards:** video starts **muted** with click-to-unmute (browser autoplay policy); viewer never gets publish UI.
-- [ ] **2.4 Browser publisher page**
+- [ ] **2.4 Browser publisher page** *(built 2026-08-26; automated Chrome e2e ✓: session create, publish, share link, 2 concurrent viewers, tier switching, stop flow, honest no-audio banner on Linux window capture. Pending for tick: audio verification on Windows Chrome — stereo at viewer + live preset switch — WSLg cannot capture system audio)*
   - `getDisplayMedia` capture; simulcast encodings (LiveKit screen-share presets + our fps caps); audio with APM-off trio + `restrictOwnAudio`; stereo (`forceStereo`, munging) + audio presets (Voice/Balanced/Music, live-switchable); copy-link UX; honest per-browser audio messaging (04 Matrix B).
   - **Accept:** Chrome full e2e: share screen+audio → 2+ viewers, tiers switch, stereo confirmed at viewer (`getStats` channel count / audible test), audio preset switches live without a blip.
   - **Guards:** `degradationPreference` set explicitly (01 §2 trap); `contentHint` set; capture at native + enforce at encoder (02 §3); Firefox/Safari get a "no audio from this browser" notice, not silent failure.

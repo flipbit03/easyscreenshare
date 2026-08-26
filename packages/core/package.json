@@ -11,5 +11,8 @@
   },
   "devDependencies": {
     "typescript": "~6.0.2"
+  },
+  "dependencies": {
+    "livekit-client": "^2.22.0"
   }
 }
