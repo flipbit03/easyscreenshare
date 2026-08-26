@@ -35,6 +35,7 @@ export default function Viewer({ sessionId }: { sessionId: string }) {
 
   useEffect(() => {
     const room = new Room({ adaptiveStream: true });
+    (globalThis as unknown as { __essRoom?: Room }).__essRoom = room; // e2e/debug handle
     roomRef.current = room;
 
     const refreshCount = () => {

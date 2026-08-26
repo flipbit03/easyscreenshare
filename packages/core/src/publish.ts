@@ -95,6 +95,7 @@ export async function startScreenShare(opts: StartOptions): Promise<PublishHandl
   if ("contentHint" in videoTrack) videoTrack.contentHint = "detail";
 
   const room = new Room({ dynacast: true });
+  (globalThis as { __essRoom?: Room }).__essRoom = room; // e2e/debug handle
   try {
     await room.connect(opts.livekitUrl, opts.token);
   } catch (e) {
