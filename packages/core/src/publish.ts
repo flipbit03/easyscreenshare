@@ -32,6 +32,30 @@ export interface StartOptions {
   token: string;
   audio: boolean;
   audioPreset: AudioPresetName;
+  /** Test/CI hook: publish an animated 1080p60 canvas instead of capturing —
+   * needs no permissions/picker, so automated e2e can run fully headless. */
+  testSource?: "canvas";
+}
+
+function createCanvasTestStream(): MediaStream {
+  const canvas = document.createElement("canvas");
+  canvas.width = 1920;
+  canvas.height = 1080;
+  const ctx = canvas.getContext("2d")!;
+  let frame = 0;
+  const draw = () => {
+    frame++;
+    ctx.fillStyle = "#101014";
+    ctx.fillRect(0, 0, 1920, 1080);
+    ctx.fillStyle = "#3557d6";
+    ctx.fillRect((frame * 7) % 1800, 200, 120, 680);
+    ctx.fillStyle = "#fff";
+    ctx.font = "48px monospace";
+    ctx.fillText(`test source — frame ${frame}`, 60, 100);
+    requestAnimationFrame(draw);
+  };
+  draw();
+  return canvas.captureStream(60);
 }
 
 export interface PublishHandle {
@@ -47,7 +71,9 @@ export interface PublishHandle {
 export async function startScreenShare(opts: StartOptions): Promise<PublishHandle> {
   // Capture at NATIVE resolution — getDisplayMedia constraints are hints only;
   // real ceilings are enforced at the encoder via simulcast layers (research 02 §3).
-  const stream = await navigator.mediaDevices.getDisplayMedia({
+  const stream = opts.testSource === "canvas"
+    ? createCanvasTestStream()
+    : await navigator.mediaDevices.getDisplayMedia({
     video: { frameRate: { ideal: 30 } },
     audio: opts.audio
       ? ({

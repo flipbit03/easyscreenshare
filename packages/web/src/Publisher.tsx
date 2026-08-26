@@ -27,11 +27,16 @@ export default function Publisher() {
     setError("");
     try {
       const session = await createSession();
+      const testSource =
+        new URLSearchParams(location.search).get("testsource") === "canvas"
+          ? ("canvas" as const)
+          : undefined;
       const handle = await startScreenShare({
         livekitUrl: session.livekitUrl,
         token: session.publisherToken,
-        audio: wantAudio && audioCapable,
+        audio: wantAudio && audioCapable && !testSource,
         audioPreset: preset,
+        testSource,
       });
       handleRef.current = handle;
       handle.onEnded(() => void stop());
