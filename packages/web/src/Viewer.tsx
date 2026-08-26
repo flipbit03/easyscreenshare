@@ -8,13 +8,7 @@ import {
   VideoQuality,
 } from "livekit-client";
 import { fetchViewerToken } from "@easyscreenshare/core";
-import {
-  IconExpand,
-  IconEye,
-  IconShrink,
-  IconVolume,
-  IconVolumeOff,
-} from "./Icons";
+import { IconExpand, IconShrink, IconVolume, IconVolumeOff } from "./Icons";
 
 type Phase = "connecting" | "waiting" | "live" | "ended" | "error";
 type QualityChoice = "auto" | "high" | "medium" | "low";
@@ -38,22 +32,46 @@ export default function Viewer({ sessionId }: { sessionId: string }) {
   const [volume, setVolume] = useState(1);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [quality, setQuality] = useState<QualityChoice>("auto");
-  const [viewerCount, setViewerCount] = useState(0);
   const [hasAudio, setHasAudio] = useState(false);
   const [controlsVisible, setControlsVisible] = useState(true);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const connReported = useRef(false);
 
   useEffect(() => {
     const room = new Room({ adaptiveStream: true });
     (globalThis as unknown as { __essRoom?: Room }).__essRoom = room; // e2e/debug handle
     roomRef.current = room;
 
-    const refreshCount = () => {
-      let n = 0;
-      for (const p of room.remoteParticipants.values()) {
-        if (p.identity.startsWith("viewer-")) n++;
+    // Measure our own ICE path and report it to the publisher via attributes.
+    const reportConnection = async () => {
+      if (connReported.current) return;
+      try {
+        for (const p of room.remoteParticipants.values()) {
+          for (const pub of p.trackPublications.values()) {
+            const recv = (pub.track as { receiver?: RTCRtpReceiver } | undefined)
+              ?.receiver;
+            if (!recv) continue;
+            const stats = await recv.getStats();
+            for (const s of stats.values()) {
+              if (s.type === "candidate-pair" && s.state === "succeeded" && s.nominated) {
+                const lc = stats.get(s.localCandidateId) as
+                  | { candidateType?: string; protocol?: string; relayProtocol?: string }
+                  | undefined;
+                if (!lc) continue;
+                const conn =
+                  lc.candidateType === "relay"
+                    ? `relay · ${lc.relayProtocol ?? "?"}`
+                    : `direct · ${lc.protocol ?? "?"}`;
+                await room.localParticipant.setAttributes({ conn });
+                connReported.current = true;
+                return;
+              }
+            }
+          }
+        }
+      } catch {
+        // best-effort telemetry — never break playback over it
       }
-      setViewerCount(n + 1); // include ourselves
     };
 
     const publisherPresent = () =>
@@ -65,6 +83,7 @@ export default function Viewer({ sessionId }: { sessionId: string }) {
           videoPubRef.current = pub;
           if (videoRef.current) track.attach(videoRef.current);
           setPhase("live");
+          setTimeout(() => void reportConnection(), 3000);
         } else if (track.kind === Track.Kind.Audio) {
           audioTrackRef.current = track;
           // Mute BEFORE attach: attach() calls play(), and an unmuted play()
@@ -77,9 +96,7 @@ export default function Viewer({ sessionId }: { sessionId: string }) {
           setHasAudio(true);
         }
       })
-      .on(RoomEvent.ParticipantConnected, refreshCount)
       .on(RoomEvent.ParticipantDisconnected, (p) => {
-        refreshCount();
         if (p.identity === "publisher") setPhase("ended");
       })
       .on(RoomEvent.Disconnected, () => {
@@ -90,7 +107,6 @@ export default function Viewer({ sessionId }: { sessionId: string }) {
       try {
         const { token, livekitUrl } = await fetchViewerToken(sessionId);
         await room.connect(livekitUrl, token);
-        refreshCount();
         if (!publisherPresent()) setPhase("waiting");
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
@@ -140,9 +156,8 @@ export default function Viewer({ sessionId }: { sessionId: string }) {
     return () => document.removeEventListener("fullscreenchange", onFs);
   }, []);
 
-  // Floating controls: appear on pointer activity, auto-hide after idle —
-  // but NEVER hide while muted audio exists (the unmute control must stay
-  // reachable) or while hovering the bar itself.
+  // Floating controls: appear on pointer activity, auto-hide after idle so
+  // the full screen is visible; hovering the bar itself keeps it pinned.
   const mutedWithAudio = muted && hasAudio;
   const pokeControls = () => {
     setControlsVisible(true);
@@ -150,12 +165,10 @@ export default function Viewer({ sessionId }: { sessionId: string }) {
     hideTimer.current = setTimeout(() => setControlsVisible(false), 2500);
   };
   useEffect(() => {
-    if (mutedWithAudio) {
-      if (hideTimer.current) clearTimeout(hideTimer.current);
-      setControlsVisible(true);
-    }
-  }, [mutedWithAudio]);
-  const showControls = controlsVisible || mutedWithAudio || phase !== "live";
+    if (phase === "live") pokeControls(); // show briefly on stream start
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase]);
+  const showControls = controlsVisible || phase !== "live";
 
   return (
     <div className="viewer" ref={containerRef}>
@@ -199,7 +212,6 @@ export default function Viewer({ sessionId }: { sessionId: string }) {
               title={!hasAudio ? "This stream has no audio" : muted ? "Unmute" : "Mute"}
             >
               {muted || !hasAudio ? <IconVolumeOff /> : <IconVolume />}
-              {mutedWithAudio && <span className="unmute-label">Unmute</span>}
             </button>
             <input
               className="vol"
@@ -223,10 +235,6 @@ export default function Viewer({ sessionId }: { sessionId: string }) {
               <option value="medium">Medium</option>
               <option value="low">Low</option>
             </select>
-            <span className="count">
-              <IconEye />
-              {viewerCount}
-            </span>
             <button className="ctl" onClick={toggleFullscreen} title="Fullscreen">
               {isFullscreen ? <IconShrink /> : <IconExpand />}
             </button>

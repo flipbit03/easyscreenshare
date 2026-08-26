@@ -1,4 +1,5 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { RoomEvent } from "livekit-client";
 import {
   AUDIO_PRESETS,
   browserSupportsSystemAudio,
@@ -7,9 +8,14 @@ import {
   type AudioPresetName,
   type PublishHandle,
 } from "@easyscreenshare/core";
-import { IconCheck, IconCopy, IconScreen } from "./Icons";
+import { IconCheck, IconCopy, IconEye, IconScreen } from "./Icons";
 
 type Phase = "idle" | "starting" | "live" | "error";
+
+interface ViewerStats {
+  count: number;
+  conns: string[]; // e.g. ["direct · udp", "relay · tls", "…"]
+}
 
 export default function Publisher() {
   const handleRef = useRef<PublishHandle | null>(null);
@@ -19,8 +25,34 @@ export default function Publisher() {
   const [copied, setCopied] = useState(false);
   const [preset, setPreset] = useState<AudioPresetName>("balanced");
   const [gotAudio, setGotAudio] = useState(true);
+  const [viewers, setViewers] = useState<ViewerStats>({ count: 0, conns: [] });
 
   const audioCapable = browserSupportsSystemAudio();
+
+  useEffect(() => {
+    if (phase !== "live") return;
+    const room = handleRef.current?.room;
+    if (!room) return;
+    const refresh = () => {
+      const conns: string[] = [];
+      for (const p of room.remoteParticipants.values()) {
+        if (!p.identity.startsWith("viewer-")) continue;
+        conns.push(p.attributes?.conn ?? "…");
+      }
+      setViewers({ count: conns.length, conns });
+    };
+    refresh();
+    room
+      .on(RoomEvent.ParticipantConnected, refresh)
+      .on(RoomEvent.ParticipantDisconnected, refresh)
+      .on(RoomEvent.ParticipantAttributesChanged, refresh);
+    return () => {
+      room
+        .off(RoomEvent.ParticipantConnected, refresh)
+        .off(RoomEvent.ParticipantDisconnected, refresh)
+        .off(RoomEvent.ParticipantAttributesChanged, refresh);
+    };
+  }, [phase]);
 
   const start = async () => {
     setPhase("starting");
@@ -169,6 +201,24 @@ export default function Publisher() {
               start again.
             </p>
           )}
+
+          <div className="viewers-line">
+            <IconEye />
+            {viewers.count === 0 ? (
+              <span>no one watching yet</span>
+            ) : (
+              <>
+                <span>
+                  {viewers.count} watching
+                </span>
+                {viewers.conns.map((c, i) => (
+                  <span key={i} className="conn-chip">
+                    {c}
+                  </span>
+                ))}
+              </>
+            )}
+          </div>
 
           {gotAudio && (
             <div className="preset-row">

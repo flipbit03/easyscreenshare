@@ -413,19 +413,12 @@ a:focus-visible {
   pointer-events: none;
 }
 .unmute-cta {
-  width: auto !important;
-  padding: 0 0.9rem;
-  gap: 0.45rem;
   background: var(--accent);
   color: #160904 !important;
-  font-weight: 650;
 }
 .unmute-cta:hover:not(:disabled) {
   background: var(--accent-hot) !important;
   color: #160904 !important;
-}
-.unmute-label {
-  font-size: 0.92rem;
 }
 .ctl {
   display: inline-flex;
@@ -461,13 +454,24 @@ a:focus-visible {
   border-radius: 8px;
   padding: 0.35rem 0.5rem;
 }
-.count {
-  display: inline-flex;
+.viewers-line {
+  margin-top: 1.5rem;
+  display: flex;
   align-items: center;
-  gap: 0.4rem;
-  padding: 0 0.35rem;
+  gap: 0.6rem;
+  flex-wrap: wrap;
   color: var(--text-2);
-  font-size: 0.9rem;
+  font-size: 0.92rem;
+}
+.conn-chip {
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text-2);
+  font-size: 0.8rem;
+  font-family: var(--font-display);
+  font-weight: 600;
 }
 
 @media (max-width: 480px) {

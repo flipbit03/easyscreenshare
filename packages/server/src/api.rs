@@ -59,6 +59,9 @@ fn mint_token(
             can_publish,
             can_subscribe: !can_publish,
             can_publish_data: false,
+            // Viewers report their ICE path (direct/relay) to the publisher
+            // via participant attributes.
+            can_update_own_metadata: !can_publish,
             ..Default::default()
         })
         .to_jwt()
