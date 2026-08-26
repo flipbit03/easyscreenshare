@@ -10,7 +10,8 @@ Anyone who opens the link watches in their browser. That's it.**
   viewer-selectable and bandwidth-adaptive (WebRTC simulcast via LiveKit).
 - **Audio is the point**: system audio on all three OSes, music-grade stereo
   Opus (up to 256 kbps, voice-processing off), sharer-side quality presets,
-  and (in progress) per-app capture — "share the game, not Discord."
+  and (in progress) per-app capture — share the game's audio, not your
+  voice call.
 - **Self-hostable**: one Rust binary + LiveKit in docker compose behind Caddy.
 
 ## Status
