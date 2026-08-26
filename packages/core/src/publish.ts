@@ -27,11 +27,19 @@ export const AUDIO_PRESETS: Record<
   music: { maxBitrate: 256_000, label: "Music", hint: "Spotify, games, film" },
 };
 
+export type VideoModeName = "motion" | "text";
+
+export const VIDEO_MODES: Record<VideoModeName, { label: string; hint: string }> = {
+  motion: { label: "Smooth motion", hint: "games, video — favors 60 fps" },
+  text: { label: "Sharp text", hint: "code, docs — favors resolution" },
+};
+
 export interface StartOptions {
   livekitUrl: string;
   token: string;
   audio: boolean;
   audioPreset: AudioPresetName;
+  videoMode?: VideoModeName;
   /** Test/CI hook: publish an animated 1080p60 canvas instead of capturing —
    * needs no permissions/picker, so automated e2e can run fully headless. */
   testSource?: "canvas";
@@ -82,6 +90,7 @@ export interface PublishHandle {
   /** False when the browser/OS could not provide system audio. */
   hasAudio: boolean;
   setAudioPreset(name: AudioPresetName): Promise<void>;
+  setVideoMode(name: VideoModeName): Promise<void>;
   /** Fired when capture ends outside our UI (browser's own "stop sharing"). */
   onEnded(cb: () => void): void;
   stop(): Promise<void>;
@@ -93,7 +102,7 @@ export async function startScreenShare(opts: StartOptions): Promise<PublishHandl
   const stream = opts.testSource === "canvas"
     ? createCanvasTestStream()
     : await navigator.mediaDevices.getDisplayMedia({
-    video: { frameRate: { ideal: 30 } },
+    video: { frameRate: { ideal: 60 } },
     audio: opts.audio
       ? ({
           echoCancellation: false,
@@ -111,7 +120,9 @@ export async function startScreenShare(opts: StartOptions): Promise<PublishHandl
 
   const videoTrack = stream.getVideoTracks()[0];
   const audioTrack = stream.getAudioTracks()[0] ?? null;
-  if ("contentHint" in videoTrack) videoTrack.contentHint = "detail";
+  const videoMode: VideoModeName = opts.videoMode ?? "motion";
+  if ("contentHint" in videoTrack)
+    videoTrack.contentHint = videoMode === "text" ? "detail" : "motion";
 
   const room = new Room({ dynacast: true });
   (globalThis as { __essRoom?: Room }).__essRoom = room; // e2e/debug handle
@@ -127,10 +138,14 @@ export async function startScreenShare(opts: StartOptions): Promise<PublishHandl
     source: Track.Source.ScreenShare,
     simulcast: true,
     videoCodec: "h264",
-    screenShareEncoding: ScreenSharePresets.h1080fps30.encoding,
-    screenShareSimulcastLayers: [ScreenSharePresets.h720fps15],
+    // Top layer: native resolution at 60 fps, screen-content bitrate ceiling.
+    screenShareEncoding: { maxBitrate: 8_000_000, maxFramerate: 60, priority: "high" },
+    screenShareSimulcastLayers: [ScreenSharePresets.h720fps30],
   });
-  setDegradationPreference(videoPub, "maintain-resolution");
+  setDegradationPreference(
+    videoPub,
+    videoMode === "text" ? "maintain-resolution" : "maintain-framerate",
+  );
 
   let audioPub: LocalTrackPublication | undefined;
   if (audioTrack) {
@@ -162,6 +177,14 @@ export async function startScreenShare(opts: StartOptions): Promise<PublishHandl
         maxBitrate: AUDIO_PRESETS[name].maxBitrate,
       }));
       await sender.setParameters(params);
+    },
+    async setVideoMode(name) {
+      if ("contentHint" in videoTrack)
+        videoTrack.contentHint = name === "text" ? "detail" : "motion";
+      setDegradationPreference(
+        videoPub,
+        name === "text" ? "maintain-resolution" : "maintain-framerate",
+      );
     },
     onEnded(cb) {
       endedCallbacks.push(cb);

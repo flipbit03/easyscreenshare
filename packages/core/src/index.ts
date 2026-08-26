@@ -7,11 +7,13 @@ export type { ViewerTokenResponse } from "./generated/ViewerTokenResponse";
 export { createSession, fetchViewerToken } from "./api";
 export {
   AUDIO_PRESETS,
+  VIDEO_MODES,
   browserSupportsSystemAudio,
   startScreenShare,
   type AudioPresetName,
   type PublishHandle,
   type StartOptions,
+  type VideoModeName,
 } from "./publish";
 
 export const CORE_VERSION = "0.1.0";

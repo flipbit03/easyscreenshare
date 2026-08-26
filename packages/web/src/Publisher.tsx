@@ -2,11 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import { RoomEvent } from "livekit-client";
 import {
   AUDIO_PRESETS,
+  VIDEO_MODES,
   browserSupportsSystemAudio,
   createSession,
   startScreenShare,
   type AudioPresetName,
   type PublishHandle,
+  type VideoModeName,
 } from "@easyscreenshare/core";
 import { IconCheck, IconCopy, IconEye, IconScreen } from "./Icons";
 
@@ -14,7 +16,7 @@ type Phase = "idle" | "starting" | "live" | "error";
 
 interface ViewerStats {
   count: number;
-  conns: string[]; // e.g. ["direct · udp", "relay · tls", "…"]
+  conns: Array<[string, number]>; // connection type -> count, e.g. ["direct · udp", 3]
 }
 
 export default function Publisher() {
@@ -24,6 +26,7 @@ export default function Publisher() {
   const [shareUrl, setShareUrl] = useState("");
   const [copied, setCopied] = useState(false);
   const [preset, setPreset] = useState<AudioPresetName>("balanced");
+  const [videoMode, setVideoMode] = useState<VideoModeName>("motion");
   const [gotAudio, setGotAudio] = useState(true);
   const [viewers, setViewers] = useState<ViewerStats>({ count: 0, conns: [] });
 
@@ -34,12 +37,15 @@ export default function Publisher() {
     const room = handleRef.current?.room;
     if (!room) return;
     const refresh = () => {
-      const conns: string[] = [];
+      const groups = new Map<string, number>();
+      let count = 0;
       for (const p of room.remoteParticipants.values()) {
         if (!p.identity.startsWith("viewer-")) continue;
-        conns.push(p.attributes?.conn ?? "…");
+        count++;
+        const key = p.attributes?.conn ?? "connecting…";
+        groups.set(key, (groups.get(key) ?? 0) + 1);
       }
-      setViewers({ count: conns.length, conns });
+      setViewers({ count, conns: [...groups.entries()] });
     };
     refresh();
     room
@@ -70,6 +76,7 @@ export default function Publisher() {
         token: session.publisherToken,
         audio: audioCapable,
         audioPreset: preset,
+        videoMode,
         testSource,
       });
       handleRef.current = handle;
@@ -110,6 +117,11 @@ export default function Publisher() {
   const changePreset = (p: AudioPresetName) => {
     setPreset(p);
     void handleRef.current?.setAudioPreset(p);
+  };
+
+  const changeVideoMode = (m: VideoModeName) => {
+    setVideoMode(m);
+    void handleRef.current?.setVideoMode(m);
   };
 
   const live = phase === "live";
@@ -210,18 +222,36 @@ export default function Publisher() {
                 <span>
                   {viewers.count} watching
                 </span>
-                {viewers.conns.map((c, i) => (
-                  <span key={i} className="conn-chip">
-                    {c}
+                {viewers.conns.map(([type, n]) => (
+                  <span key={type} className="conn-chip">
+                    {n}× {type}
                   </span>
                 ))}
               </>
             )}
           </div>
 
+          <div className="preset-row">
+            <span className="preset-label">Video</span>
+            <div className="segmented" role="radiogroup" aria-label="Video mode">
+              {(Object.keys(VIDEO_MODES) as VideoModeName[]).map((key) => (
+                <button
+                  key={key}
+                  role="radio"
+                  aria-checked={videoMode === key}
+                  className={videoMode === key ? "seg on" : "seg"}
+                  onClick={() => changeVideoMode(key)}
+                  title={VIDEO_MODES[key].hint}
+                >
+                  {VIDEO_MODES[key].label}
+                </button>
+              ))}
+            </div>
+          </div>
+
           {gotAudio && (
             <div className="preset-row">
-              <span className="preset-label">Audio quality</span>
+              <span className="preset-label">Audio</span>
               <div className="segmented" role="radiogroup" aria-label="Audio quality">
                 {(Object.keys(AUDIO_PRESETS) as AudioPresetName[]).map((key) => (
                   <button
