@@ -1,0 +1,40 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # rustup reads the toolchain from the environment; `rustup show` installs it
+      - name: rust toolchain
+        run: rustup show
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo build --workspace
+      - run: cargo test --workspace
+      - run: cargo fmt --check
+      - run: cargo clippy --workspace -- -D warnings
+
+  typescript:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # version comes from the packageManager field in package.json
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r build
+      - run: pnpm -r lint

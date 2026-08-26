@@ -1,0 +1,17 @@
+# Rust
+target/
+
+# Node
+node_modules/
+dist/
+out/
+*.tsbuildinfo
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
