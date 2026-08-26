@@ -72,7 +72,7 @@
 
 ## Phase 3 — Deploy v0 to outpost
 
-- [ ] **3.1 Machine shaping (my_infra playbook)**
+- [x] **3.1 Machine shaping (my_infra playbook)** *(done 2026-08-26 — playbook idempotent (2nd run changed=0), both vhosts 502 over valid LE TLS, DEPLOY_SSH_KEY set as repo secret)*
   - `easyscreenshare` user (docker group) + deploy key + Caddy vhosts (`easyscreenshare.flipbit03.com` → app port, `lk.easyscreenshare.flipbit03.com` → 7880) in a new `easyscreenshare.yaml` playbook, following `2048wars.yaml` exactly. DNS + firewall ports already added in my_infra `iac/vultr` (pending `terraform apply`).
   - **Accept:** playbook idempotent (second run: no changes); vhosts serve 502 (nothing deployed yet) over valid TLS.
   - **Guards:** **do not touch UDP 3478** (headscale DERP) or 443 (Caddy); playbook only shapes what survives redeploys.
