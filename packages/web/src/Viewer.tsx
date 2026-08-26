@@ -220,7 +220,7 @@ export default function Viewer({ sessionId }: { sessionId: string }) {
               max={1}
               step={0.05}
               value={volume}
-              disabled={muted || !hasAudio}
+              disabled={!hasAudio}
               onChange={(e) => changeVolume(Number(e.target.value))}
               aria-label="Volume"
             />
