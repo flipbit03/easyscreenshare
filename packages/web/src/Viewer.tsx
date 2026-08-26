@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  ConnectionState,
   RemoteTrack,
   RemoteTrackPublication,
   Room,
@@ -9,6 +8,13 @@ import {
   VideoQuality,
 } from "livekit-client";
 import { fetchViewerToken } from "@easyscreenshare/core";
+import {
+  IconExpand,
+  IconEye,
+  IconShrink,
+  IconVolume,
+  IconVolumeOff,
+} from "./Icons";
 
 type Phase = "connecting" | "waiting" | "live" | "ended" | "error";
 type QualityChoice = "auto" | "high" | "medium" | "low";
@@ -30,8 +36,10 @@ export default function Viewer({ sessionId }: { sessionId: string }) {
   const [error, setError] = useState("");
   const [muted, setMuted] = useState(true); // autoplay policy: must start muted
   const [volume, setVolume] = useState(1);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const [quality, setQuality] = useState<QualityChoice>("auto");
   const [viewerCount, setViewerCount] = useState(0);
+  const [hasAudio, setHasAudio] = useState(false);
 
   useEffect(() => {
     const room = new Room({ adaptiveStream: true });
@@ -57,15 +65,17 @@ export default function Viewer({ sessionId }: { sessionId: string }) {
           setPhase("live");
         } else if (track.kind === Track.Kind.Audio) {
           audioTrackRef.current = track;
-          const el = track.attach();
-          el.muted = true; // unmuted only by user click
+          // Mute BEFORE attach: attach() calls play(), and an unmuted play()
+          // without a user gesture is rejected by autoplay policy — leaving
+          // the element paused forever. Muted playback is always allowed.
+          const el = new Audio();
+          el.muted = true;
+          track.attach(el);
           document.body.appendChild(el);
+          setHasAudio(true);
         }
       })
-      .on(RoomEvent.ParticipantConnected, () => {
-        refreshCount();
-        if (publisherPresent() && phase === "waiting") setPhase("connecting");
-      })
+      .on(RoomEvent.ParticipantConnected, refreshCount)
       .on(RoomEvent.ParticipantDisconnected, (p) => {
         refreshCount();
         if (p.identity === "publisher") setPhase("ended");
@@ -98,6 +108,9 @@ export default function Viewer({ sessionId }: { sessionId: string }) {
     for (const el of audioTrackRef.current?.attachedElements ?? []) {
       el.muted = next;
       (el as HTMLAudioElement).volume = volume;
+      // The unmute click IS a user gesture — (re)start playback with it in
+      // case the initial autoplay was rejected.
+      if (!next) void (el as HTMLAudioElement).play().catch(() => {});
     }
   };
 
@@ -114,15 +127,31 @@ export default function Viewer({ sessionId }: { sessionId: string }) {
     else videoPubRef.current?.setVideoQuality(VideoQuality.HIGH);
   };
 
-  const fullscreen = () => containerRef.current?.requestFullscreen();
+  const toggleFullscreen = () => {
+    if (document.fullscreenElement) void document.exitFullscreen();
+    else void containerRef.current?.requestFullscreen();
+  };
+
+  useEffect(() => {
+    const onFs = () => setIsFullscreen(Boolean(document.fullscreenElement));
+    document.addEventListener("fullscreenchange", onFs);
+    return () => document.removeEventListener("fullscreenchange", onFs);
+  }, []);
 
   return (
     <div className="viewer" ref={containerRef}>
       <div className="stage">
-        {phase === "connecting" && <p className="status">connecting…</p>}
-        {phase === "waiting" && <p className="status">waiting for the publisher…</p>}
-        {phase === "ended" && <p className="status">stream ended</p>}
-        {phase === "error" && <p className="status error">couldn't join: {error}</p>}
+        {phase !== "live" && (
+          <div className="stage-status">
+            <span className="wordmark dim">
+              easyscreenshare<span className="wordmark-dot" aria-hidden="true" />
+            </span>
+            {phase === "connecting" && <p>connecting…</p>}
+            {phase === "waiting" && <p>waiting for the stream to start…</p>}
+            {phase === "ended" && <p>stream ended</p>}
+            {phase === "error" && <p className="err">couldn't join: {error}</p>}
+          </div>
+        )}
         <video
           ref={videoRef}
           playsInline
@@ -130,33 +159,53 @@ export default function Viewer({ sessionId }: { sessionId: string }) {
           muted
           style={{ display: phase === "live" ? "block" : "none" }}
         />
+        {phase === "live" && muted && hasAudio && (
+          <button className="unmute-overlay" onClick={toggleMute}>
+            <IconVolume width={20} height={20} />
+            Click to unmute
+          </button>
+        )}
       </div>
+
       {phase === "live" && (
         <div className="controls">
-          <button onClick={toggleMute}>{muted ? "🔇 unmute" : "🔊 mute"}</button>
+          <button
+            className="ctl"
+            onClick={toggleMute}
+            disabled={!hasAudio}
+            title={!hasAudio ? "This stream has no audio" : muted ? "Unmute" : "Mute"}
+          >
+            {muted || !hasAudio ? <IconVolumeOff /> : <IconVolume />}
+          </button>
           <input
+            className="vol"
             type="range"
             min={0}
             max={1}
             step={0.05}
             value={volume}
-            disabled={muted}
+            disabled={muted || !hasAudio}
             onChange={(e) => changeVolume(Number(e.target.value))}
+            aria-label="Volume"
           />
           <select
+            className="quality"
             value={quality}
             onChange={(e) => changeQuality(e.target.value as QualityChoice)}
+            aria-label="Video quality"
           >
             <option value="auto">Auto</option>
             <option value="high">High</option>
             <option value="medium">Medium</option>
             <option value="low">Low</option>
           </select>
-          <button onClick={fullscreen}>⛶ fullscreen</button>
           <span className="count">
+            <IconEye />
             {viewerCount} watching
-            {roomRef.current?.state === ConnectionState.Connected ? "" : " (reconnecting…)"}
           </span>
+          <button className="ctl" onClick={toggleFullscreen} title="Fullscreen">
+            {isFullscreen ? <IconShrink /> : <IconExpand />}
+          </button>
         </div>
       )}
     </div>

@@ -7,6 +7,7 @@ import {
   type AudioPresetName,
   type PublishHandle,
 } from "@easyscreenshare/core";
+import { IconCheck, IconCopy, IconScreen } from "./Icons";
 
 type Phase = "idle" | "starting" | "live" | "error";
 
@@ -16,7 +17,6 @@ export default function Publisher() {
   const [error, setError] = useState("");
   const [shareUrl, setShareUrl] = useState("");
   const [copied, setCopied] = useState(false);
-  const [wantAudio, setWantAudio] = useState(true);
   const [preset, setPreset] = useState<AudioPresetName>("balanced");
   const [gotAudio, setGotAudio] = useState(true);
 
@@ -31,10 +31,12 @@ export default function Publisher() {
         new URLSearchParams(location.search).get("testsource") === "canvas"
           ? ("canvas" as const)
           : undefined;
+      // Audio is always requested when the browser can deliver it — Chrome's
+      // own picker checkbox is the single place the user decides.
       const handle = await startScreenShare({
         livekitUrl: session.livekitUrl,
         token: session.publisherToken,
-        audio: wantAudio && audioCapable && !testSource,
+        audio: audioCapable && !testSource,
         audioPreset: preset,
         testSource,
       });
@@ -50,8 +52,13 @@ export default function Publisher() {
       }
       setPhase("live");
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      setPhase("error");
+      const msg = e instanceof Error ? e.message : String(e);
+      if (/NotAllowed|Permission/i.test(msg)) {
+        setPhase("idle"); // user cancelled the picker — not an error
+      } else {
+        setError(msg);
+        setPhase("error");
+      }
     }
   };
 
@@ -73,73 +80,121 @@ export default function Publisher() {
     void handleRef.current?.setAudioPreset(p);
   };
 
+  const live = phase === "live";
+
   return (
     <div className="publisher">
-      <h1>easyscreenshare</h1>
-      <p className="tagline">Share your screen. Paste one link. Done.</p>
+      <header className="topbar">
+        <span className="wordmark">
+          easyscreenshare<span className="wordmark-dot" aria-hidden="true" />
+        </span>
+      </header>
 
-      {!audioCapable && (
-        <p className="banner">
-          This browser can't capture system audio — your stream will be silent.
-          Use Chrome or Edge for audio (desktop app coming soon).
-        </p>
-      )}
+      {!live && (
+        <main className="hero">
+          <h1>
+            Your screen.
+            <br />
+            One link.
+          </h1>
+          <p className="sub">
+            Hit share, send the link — friends watch live in any browser.
+            No installs, no accounts, quality up to native resolution.
+          </p>
 
-      {phase !== "live" && (
-        <div className="setup">
-          <label>
-            <input
-              type="checkbox"
-              checked={wantAudio && audioCapable}
-              disabled={!audioCapable}
-              onChange={(e) => setWantAudio(e.target.checked)}
-            />
-            share system audio
-          </label>
           <button
-            className="primary"
+            className="cta"
             onClick={start}
             disabled={phase === "starting"}
           >
-            {phase === "starting" ? "starting…" : "Start sharing"}
+            <IconScreen width={20} height={20} />
+            {phase === "starting" ? "Starting…" : "Share my screen"}
           </button>
-          {phase === "error" && <p className="banner error">{error}</p>}
-        </div>
-      )}
 
-      {phase === "live" && (
-        <div className="live">
-          <p className="live-indicator">● you are live</p>
-          <div className="sharebox">
-            <code>{shareUrl}</code>
-            <button onClick={copy}>{copied ? "copied ✓" : "copy link"}</button>
-          </div>
-          {!gotAudio && wantAudio && (
-            <p className="banner">
-              No system audio was captured — on this OS, Chrome only shares audio
-              when you pick a <b>screen</b> (not a window), and on Linux only tab
-              audio is available.
+          {!audioCapable && (
+            <p className="note warn">
+              This browser can't capture system audio — the stream will be
+              video-only. Chrome or Edge can share sound.
             </p>
           )}
-          <label className="preset">
-            audio quality:{" "}
-            <select
-              value={preset}
-              onChange={(e) => changePreset(e.target.value as AudioPresetName)}
-              disabled={!gotAudio}
-            >
-              {Object.entries(AUDIO_PRESETS).map(([key, p]) => (
-                <option key={key} value={key}>
-                  {p.label} — {p.hint}
-                </option>
-              ))}
-            </select>
-          </label>
-          <button className="danger" onClick={stop}>
+          {phase === "error" && <p className="note error">{error}</p>}
+
+          <ol className="steps">
+            <li>
+              <b>Pick what to share.</b> A screen shares its audio too — check
+              “also share system audio” in the dialog.
+            </li>
+            <li>
+              <b>The link lands in your clipboard.</b> Paste it anywhere —
+              Discord still does text just fine.
+            </li>
+            <li>
+              <b>They're watching.</b> Any browser, no install, adaptive
+              quality up to source resolution.
+            </li>
+          </ol>
+        </main>
+      )}
+
+      {live && (
+        <main className="live-panel">
+          <div className="live-head">
+            <span className="live-badge">
+              <span className="live-dot" aria-hidden="true" />
+              LIVE
+            </span>
+            <span className="live-hint">
+              {copied ? "Link copied — paste it to your friends" : "Send this link to your friends"}
+            </span>
+          </div>
+
+          <div className="sharebox">
+            <code>{shareUrl}</code>
+            <button className="copy-btn" onClick={copy}>
+              {copied ? <IconCheck /> : <IconCopy />}
+              {copied ? "Copied" : "Copy"}
+            </button>
+          </div>
+
+          {!gotAudio && audioCapable && (
+            <p className="note warn">
+              No system audio came through. Share your <b>entire screen</b> and
+              enable <b>“Also share system audio”</b> in Chrome's dialog, then
+              start again.
+            </p>
+          )}
+
+          {gotAudio && (
+            <div className="preset-row">
+              <span className="preset-label">Audio quality</span>
+              <div className="segmented" role="radiogroup" aria-label="Audio quality">
+                {(Object.keys(AUDIO_PRESETS) as AudioPresetName[]).map((key) => (
+                  <button
+                    key={key}
+                    role="radio"
+                    aria-checked={preset === key}
+                    className={preset === key ? "seg on" : "seg"}
+                    onClick={() => changePreset(key)}
+                    title={AUDIO_PRESETS[key].hint}
+                  >
+                    {AUDIO_PRESETS[key].label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <button className="stop-btn" onClick={stop}>
             Stop sharing
           </button>
-        </div>
+        </main>
       )}
+
+      <footer className="foot">
+        <a href="https://github.com/flipbit03/easyscreenshare">open source</a>
+        <span aria-hidden="true">·</span>
+        <span>made in Brazil, where Discord can't share screens anymore</span>
+      </footer>
     </div>
   );
 }
