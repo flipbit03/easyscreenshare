@@ -2,9 +2,14 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <title>easyscreenshare picker</title>
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src https://easyscreenshare.flipbit03.com wss://lk.easyscreenshare.flipbit03.com http://localhost:* ws://localhost:*"
+    />
+    <title>easyscreenshare</title>
   </head>
   <body>
-    <!-- Source picker UI lands here in 4.2 -->
+    <div id="app"></div>
+    <script type="module" src="/src/renderer.ts"></script>
   </body>
 </html>

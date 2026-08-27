@@ -22,5 +22,9 @@
     "electron-builder": "^26.15.3",
     "typescript": "~6.0.2",
     "vite": "^8.2.2"
+  },
+  "dependencies": {
+    "@easyscreenshare/core": "workspace:*",
+    "livekit-client": "^2.22.0"
   }
 }

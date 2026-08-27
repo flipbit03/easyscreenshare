@@ -1,0 +1,119 @@
+/* Desktop picker — same system as the web app (tokens copied, not linked). */
+* {
+  box-sizing: border-box;
+  margin: 0;
+}
+:root {
+  --bg: #0b0e14;
+  --panel: #121722;
+  --panel-2: #1a2130;
+  --line: #232c3d;
+  --text: #e9edf4;
+  --text-2: #9aa6ba;
+  --accent: #ff5c38;
+  --radius: 10px;
+}
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  user-select: none;
+}
+#app {
+  padding: 1.25rem 1.5rem;
+}
+.head h1 {
+  font-size: 1.35rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.head .sub {
+  margin-top: 0.35rem;
+  color: var(--text-2);
+  font-size: 0.92rem;
+}
+.grid {
+  margin-top: 1.25rem;
+}
+.section-label {
+  margin: 1.1rem 0 0.55rem;
+  color: var(--text-2);
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 0.75rem;
+}
+.card {
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.5rem;
+  cursor: pointer;
+  transition: border-color 120ms ease-out, background 120ms ease-out;
+}
+.card:hover {
+  border-color: var(--accent);
+  background: var(--panel-2);
+}
+.card:focus-visible {
+  outline: 2px solid #7d8db0;
+  outline-offset: 2px;
+}
+.thumb {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: contain;
+  background: #05070b;
+  border-radius: 6px;
+}
+.thumb-empty {
+  display: block;
+}
+.caption {
+  margin-top: 0.5rem;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+}
+.appicon {
+  width: 16px;
+  height: 16px;
+}
+.name {
+  font-size: 0.88rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.status {
+  display: grid;
+  place-items: center;
+  gap: 1rem;
+  min-height: 60vh;
+  color: var(--text-2);
+}
+.status .err {
+  color: #ff9c9c;
+  max-width: 52ch;
+}
+.retry {
+  font: inherit;
+  color: inherit;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.55rem 1.1rem;
+  cursor: pointer;
+}
+.retry:hover {
+  background: var(--panel-2);
+}
