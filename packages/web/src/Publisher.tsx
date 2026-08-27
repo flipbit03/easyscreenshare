@@ -211,10 +211,11 @@ export default function Publisher() {
               />
               {name.trim() && (
                 <span className={`name-badge name-badge-${nameStatus}`}>
-                  {nameStatus === "checking" && "…"}
-                  {nameStatus === "available" && "✓ available"}
-                  {nameStatus === "taken" && "✗ taken"}
-                  {nameStatus === "invalid" && "3–32: a–z 0–9 - _"}
+                  {nameStatus === "checking" && "checking…"}
+                  {nameStatus === "available" && "free ✓"}
+                  {nameStatus === "taken" && "taken"}
+                  {nameStatus === "invalid" &&
+                    (name.trim().length < 3 ? "too short" : "invalid")}
                 </span>
               )}
             </label>

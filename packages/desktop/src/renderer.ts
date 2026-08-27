@@ -74,13 +74,13 @@ async function renderPicker(mode: "start" | "switch" = "start") {
       if (n) localStorage.setItem(NAME_KEY, n);
       else localStorage.removeItem(NAME_KEY);
       if (!n) return setStatus("idle", "");
-      setStatus("checking", "…");
+      setStatus("checking", "checking…");
       clearTimeout(debounce);
       debounce = setTimeout(async () => {
         const r = await checkName(n, serverUrl);
-        if (!r.valid) setStatus("invalid", "3–32: a–z 0–9 - _");
-        else if (r.available) setStatus("available", "✓ available");
-        else setStatus("taken", "✗ taken");
+        if (!r.valid) setStatus("invalid", n.length < 3 ? "too short" : "invalid");
+        else if (r.available) setStatus("available", "free ✓");
+        else setStatus("taken", "taken");
       }, 350);
     };
     input.addEventListener("input", () => {

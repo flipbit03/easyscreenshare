@@ -503,13 +503,13 @@ input[type="range"]:disabled {
   margin-top: 1.5rem;
 }
 .name-field {
-  display: inline-flex;
+  display: flex;
+  width: 100%;
+  max-width: 30rem;
   align-items: center;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--panel);
-  overflow: hidden;
-  max-width: 100%;
 }
 .name-field:focus-within {
   border-color: var(--accent);
@@ -544,11 +544,12 @@ input[type="range"]:disabled {
 }
 .name-field input {
   font: inherit;
+  flex: 1;
+  min-width: 0;
   background: none;
   border: none;
   color: var(--text);
-  padding: 0.6rem 0.8rem 0.6rem 0.1rem;
-  min-width: 16rem;
+  padding: 0.6rem 0.5rem 0.6rem 0.1rem;
   outline: none;
 }
 

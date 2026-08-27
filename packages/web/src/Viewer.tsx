@@ -31,7 +31,10 @@ export default function Viewer({ sessionId }: { sessionId: string }) {
   const [muted, setMuted] = useState(true); // autoplay policy: must start muted
   const [volume, setVolume] = useState(1);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [quality, setQuality] = useState<QualityChoice>("auto");
+  // Default to HIGH, not Auto: adaptiveStream picks a layer from the rendered
+  // element size, which looks soft even on a fat direct connection. HIGH pins
+  // the top layer; the viewer can drop to Auto to save bandwidth.
+  const [quality, setQuality] = useState<QualityChoice>("high");
   const [hasAudio, setHasAudio] = useState(false);
   const [controlsVisible, setControlsVisible] = useState(true);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -82,6 +85,7 @@ export default function Viewer({ sessionId }: { sessionId: string }) {
         if (track.kind === Track.Kind.Video) {
           videoPubRef.current = pub;
           if (videoRef.current) track.attach(videoRef.current);
+          pub.setVideoQuality(VideoQuality.HIGH); // match the "high" default
           setPhase("live");
           setTimeout(() => void reportConnection(), 3000);
         } else if (track.kind === Track.Kind.Audio) {
