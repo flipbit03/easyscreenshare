@@ -120,7 +120,7 @@
 
 ## Phase 6 — M4: Distribution
 
-- [ ] **6.1 Release pipeline** — tagged releases build all artifacts + checksums to GitHub Releases.
+- [x] **6.1 Release pipeline (Windows)** *(2026-08-26 — publishing a GitHub Release stamps the version FROM THE TAG at build time and attaches the portable exe + SHA256SUMS; repo stays 0.0.0, zero version-bump commits. `.github/workflows/release-desktop.yml`)*
 - [ ] **6.2 winget + Scoop manifests** (bypass SmartScreen via package managers, 03).
 - [ ] **6.3 SignPath Foundation application** (Windows signing; requires public repo, MIT ✓).
 - [ ] **6.4 Auto-update** — Windows via `electron-updater` + `verifyUpdateCodeSignature: false` (03); macOS/Linux: "check for updates" opens releases page.

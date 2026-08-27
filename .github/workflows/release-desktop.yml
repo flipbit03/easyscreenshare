@@ -1,0 +1,76 @@
+# Publishing a GitHub Release (tag vX.Y.Z) builds the Windows portable .exe
+# and attaches it to that release. The version is STAMPED from the tag at
+# build time — the repo keeps 0.0.0 forever, so no version-bump commits.
+#   Cut one with:  gh release create v0.3.2 --generate-notes
+name: Release Desktop
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version without the v (e.g. 0.3.2). Builds artifacts only; does not attach to a release."
+        required: true
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Resolve version from tag
+        id: ver
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.release.tag_name }}" ]; then
+            V="${{ github.event.release.tag_name }}"
+          else
+            V="v${{ github.event.inputs.version }}"
+          fi
+          echo "tag=$V" >> "$GITHUB_OUTPUT"
+          echo "num=${V#v}" >> "$GITHUB_OUTPUT"
+          echo "Building version ${V#v}"
+
+      - name: Stamp version into desktop package.json (not committed)
+        shell: bash
+        run: |
+          node -e "const f='packages/desktop/package.json';const fs=require('fs');const p=JSON.parse(fs.readFileSync(f));p.version='${{ steps.ver.outputs.num }}';fs.writeFileSync(f,JSON.stringify(p,null,2)+'\n')"
+
+      - run: pnpm --filter @easyscreenshare/core build
+
+      - run: pnpm --filter @easyscreenshare/desktop run make:win
+
+      - name: Checksums
+        shell: bash
+        run: |
+          cd packages/desktop/out/portable
+          sha256sum *.exe > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Attach to release
+        if: github.event_name == 'release'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ steps.ver.outputs.tag }}" \
+            packages/desktop/out/portable/*.exe \
+            packages/desktop/out/portable/SHA256SUMS.txt \
+            --clobber
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: easyscreenshare-portable-${{ steps.ver.outputs.num }}
+          path: packages/desktop/out/portable/*
