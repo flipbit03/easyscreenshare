@@ -5,12 +5,16 @@ import {
   NameTakenError,
   VIDEO_MODES,
   browserSupportsSystemAudio,
+  checkName,
   createSession,
   startScreenShare,
   type AudioPresetName,
   type PublishHandle,
   type VideoModeName,
 } from "@easyscreenshare/core";
+
+type NameStatus = "idle" | "checking" | "available" | "taken" | "invalid";
+const NAME_KEY = "ess:name";
 import { IconCheck, IconCopy, IconEye, IconScreen } from "./Icons";
 
 type Phase = "idle" | "starting" | "live" | "error";
@@ -30,10 +34,29 @@ export default function Publisher() {
   const [videoMode, setVideoMode] = useState<VideoModeName>("motion");
   const [gotAudio, setGotAudio] = useState(true);
   const [viewers, setViewers] = useState<ViewerStats>({ count: 0, conns: [] });
-  const [name, setName] = useState("");
-  const [nameTaken, setNameTaken] = useState(false);
+  const [name, setName] = useState(
+    () => localStorage.getItem(NAME_KEY) ?? "",
+  );
+  const [nameStatus, setNameStatus] = useState<NameStatus>("idle");
 
   const audioCapable = browserSupportsSystemAudio();
+
+  // Live availability check (debounced) + remember the name for next time.
+  useEffect(() => {
+    const n = name.trim();
+    if (n) localStorage.setItem(NAME_KEY, n);
+    else localStorage.removeItem(NAME_KEY);
+    if (!n) {
+      setNameStatus("idle");
+      return;
+    }
+    setNameStatus("checking");
+    const t = setTimeout(async () => {
+      const r = await checkName(n);
+      setNameStatus(!r.valid ? "invalid" : r.available ? "available" : "taken");
+    }, 350);
+    return () => clearTimeout(t);
+  }, [name]);
 
   useEffect(() => {
     if (phase !== "live") return;
@@ -66,7 +89,6 @@ export default function Publisher() {
   const start = async () => {
     setPhase("starting");
     setError("");
-    setNameTaken(false);
     try {
       const session = await createSession(name.trim() || undefined);
       const testSource =
@@ -100,7 +122,7 @@ export default function Publisher() {
       setPhase("live");
     } catch (e) {
       if (e instanceof NameTakenError) {
-        setNameTaken(true);
+        setNameStatus("taken"); // lost a race between check and claim
         setPhase("idle");
         return;
       }
@@ -173,7 +195,7 @@ export default function Publisher() {
           </p>
 
           <div className="name-row">
-            <label className="name-field">
+            <label className={`name-field name-${nameStatus}`}>
               <span className="name-prefix">/s/</span>
               <input
                 type="text"
@@ -183,18 +205,20 @@ export default function Publisher() {
                 placeholder="custom name (optional)"
                 value={name}
                 maxLength={32}
-                onChange={(e) => {
-                  setName(e.target.value.replace(/[^A-Za-z0-9_-]/g, ""));
-                  setNameTaken(false);
-                }}
+                onChange={(e) =>
+                  setName(e.target.value.replace(/[^A-Za-z0-9_-]/g, ""))
+                }
               />
+              {name.trim() && (
+                <span className={`name-badge name-badge-${nameStatus}`}>
+                  {nameStatus === "checking" && "…"}
+                  {nameStatus === "available" && "✓ available"}
+                  {nameStatus === "taken" && "✗ taken"}
+                  {nameStatus === "invalid" && "3–32: a–z 0–9 - _"}
+                </span>
+              )}
             </label>
           </div>
-          {nameTaken && (
-            <p className="note warn">
-              “{name}” is in use right now — pick another name.
-            </p>
-          )}
 
           <button
             className="cta"

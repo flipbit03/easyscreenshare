@@ -48,6 +48,7 @@ pub fn build_router(cfg: config::Config) -> Router {
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/api/sessions", post(api::create_session))
+        .route("/api/names/{name}", get(api::check_name))
         .route("/api/sessions/{id}/heartbeat", post(api::heartbeat))
         .route("/api/sessions/{id}/token", get(api::viewer_token))
         .layer(cors)

@@ -11,6 +11,7 @@
   --text: #e9edf4;
   --text-2: #9aa6ba;
   --accent: #ff5c38;
+  --ok: #3ecf8e;
   --radius: 10px;
 }
 body {
@@ -150,3 +151,16 @@ body {
   min-width: 14rem;
   outline: none;
 }
+
+.name-field.name-available { border-color: var(--ok); }
+.name-field.name-taken,
+.name-field.name-invalid { border-color: #d9534f; }
+.name-badge {
+  padding-right: 0.7rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.name-badge-available { color: var(--ok); }
+.name-badge-taken, .name-badge-invalid { color: #ff8a85; }
+.name-badge-checking { color: var(--text-2); }

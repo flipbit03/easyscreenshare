@@ -514,6 +514,29 @@ input[type="range"]:disabled {
 .name-field:focus-within {
   border-color: var(--accent);
 }
+.name-field.name-available {
+  border-color: var(--ok);
+}
+.name-field.name-taken,
+.name-field.name-invalid {
+  border-color: #d9534f;
+}
+.name-badge {
+  padding-right: 0.7rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.name-badge-available {
+  color: var(--ok);
+}
+.name-badge-taken,
+.name-badge-invalid {
+  color: #ff8a85;
+}
+.name-badge-checking {
+  color: var(--text-2);
+}
 .name-prefix {
   padding: 0.6rem 0.4rem 0.6rem 0.8rem;
   color: var(--text-2);

@@ -3,6 +3,7 @@ import { RoomEvent } from "livekit-client";
 import {
   NameTakenError,
   SYSTEM_AUDIO_CONSTRAINTS,
+  checkName,
   createSession,
   startScreenShare,
   type PublishHandle,
@@ -17,10 +18,11 @@ declare global {
   }
 }
 
+const NAME_KEY = "ess:name";
 const app = document.getElementById("app")!;
 let handle: PublishHandle | null = null;
 let mixer: AppAudioMixer | null = null;
-let vanityName = "";
+let vanityName = localStorage.getItem(NAME_KEY) ?? "";
 let serverUrl = "";
 void window.ess.serverUrl().then((u) => (serverUrl = u));
 
@@ -60,13 +62,37 @@ async function renderPicker(mode: "start" | "switch" = "start") {
     input.placeholder = "custom name (optional)";
     input.value = vanityName;
     input.maxLength = 32;
+    const badge = h("span", "name-badge");
+    let debounce: ReturnType<typeof setTimeout> | undefined;
+    const setStatus = (status: string, text: string) => {
+      field.className = `name-field name-${status}`;
+      badge.className = `name-badge name-badge-${status}`;
+      badge.textContent = text;
+    };
+    const runCheck = () => {
+      const n = vanityName.trim();
+      if (n) localStorage.setItem(NAME_KEY, n);
+      else localStorage.removeItem(NAME_KEY);
+      if (!n) return setStatus("idle", "");
+      setStatus("checking", "…");
+      clearTimeout(debounce);
+      debounce = setTimeout(async () => {
+        const r = await checkName(n, serverUrl);
+        if (!r.valid) setStatus("invalid", "3–32: a–z 0–9 - _");
+        else if (r.available) setStatus("available", "✓ available");
+        else setStatus("taken", "✗ taken");
+      }, 350);
+    };
     input.addEventListener("input", () => {
       input.value = input.value.replace(/[^A-Za-z0-9_-]/g, "");
       vanityName = input.value;
+      runCheck();
     });
     field.append(input);
+    field.append(badge);
     nameRow.append(field);
     app.append(nameRow);
+    if (vanityName) runCheck(); // re-check the remembered name
   }
 
   const grid = h("div", "grid");

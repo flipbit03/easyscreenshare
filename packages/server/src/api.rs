@@ -58,6 +58,16 @@ pub struct ViewerTokenResponse {
     pub livekit_url: String,
 }
 
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../core/src/generated/")]
+pub struct NameAvailability {
+    /// Passes the vanity-name format rules.
+    pub valid: bool,
+    /// Not currently claimed by a live session (only meaningful if `valid`).
+    pub available: bool,
+}
+
 fn rand_string(len: usize) -> String {
     Alphanumeric.sample_string(&mut rand::rng(), len)
 }
@@ -145,6 +155,30 @@ pub async fn create_session(
         publisher_token,
         livekit_url: state.cfg.livekit_public_url.clone(),
     }))
+}
+
+/// Read-only availability check for the live name indicator — never claims
+/// the name (a claim only happens at create_session).
+pub async fn check_name(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Json<NameAvailability> {
+    let name = name.trim();
+    if !valid_name(name) {
+        return Json(NameAvailability {
+            valid: false,
+            available: false,
+        });
+    }
+    let sessions = state.sessions.lock().unwrap();
+    let taken = matches!(
+        sessions.get(name),
+        Some(e) if e.last_seen.elapsed() < SESSION_TTL
+    );
+    Json(NameAvailability {
+        valid: true,
+        available: !taken,
+    })
 }
 
 pub async fn heartbeat(

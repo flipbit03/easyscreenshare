@@ -1,5 +1,8 @@
 import type { CreateSessionResponse } from "./generated/CreateSessionResponse";
+import type { NameAvailability } from "./generated/NameAvailability";
 import type { ViewerTokenResponse } from "./generated/ViewerTokenResponse";
+
+export type { NameAvailability };
 
 export class NameTakenError extends Error {
   constructor(message: string) {
@@ -40,6 +43,20 @@ export async function fetchViewerToken(
   if (res.status === 404) throw new StreamNotFoundError();
   if (!res.ok) throw new Error(`fetchViewerToken failed: HTTP ${res.status}`);
   return res.json();
+}
+
+/** Read-only availability check for the live name indicator. Never claims. */
+export async function checkName(
+  name: string,
+  baseUrl = "",
+): Promise<NameAvailability> {
+  try {
+    const res = await fetch(`${baseUrl}/api/names/${encodeURIComponent(name)}`);
+    if (!res.ok) return { valid: false, available: false };
+    return await res.json();
+  } catch {
+    return { valid: false, available: false };
+  }
 }
 
 /** Keeps a session marked live server-side. Returns a stop function. Runs in
