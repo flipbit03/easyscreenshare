@@ -110,7 +110,7 @@
 ## Phase 5 — M3: Audio excellence
 
 - [ ] **5.1 Audio diagnostics** — in-app self-test: capture 200 ms, assert non-zero RMS + channel count + `getSettings` APM flags; surfaced in UI on failure.
-- [ ] **5.2 Per-app capture UI** *(built 2026-08-26, awaiting field verdict: screen shares now use a ZERO-NATIVE per-app mixer — one include-mode capture per windowed tree root, Web Audio mix, exclusions as zero-gain (instant Discord toggle, mid-stream launches covered by 5s poll). Window share = that-app-only audio remains field-confirmed. Chromium source verified: no exclude-arbitrary-app device id exists. Field risks: N concurrent app-loopback captures; gestureless follow-up gDM (activation poked via sendInputEvent))*
+- [x] **5.2 Per-app capture UI** *(FIELD-CONFIRMED 2026-08-26 — zero-native per-app mixer works: screen share streams music with Discord filtered out; instant exclusion toggle; N concurrent app-loopback captures + gestureless follow-up gDM both hold on real Windows 11. Window share = that-app-only remains confirmed. Beats the reference app (hiroshimorowaka/screen-share) which needs a native Rust WASAPI module for the same result.)*
   - **Accept:** with Discord playing voice + game audio: viewers hear game only, toggle works mid-stream.
 - [ ] **5.3 Mic opt-in path** — Web Audio mixer (per-source gain), APM on for mic, RNNoise opt-in.
   - **Accept:** mic never captured unless enabled (verify: no `getUserMedia` call, no OS mic indicator); mix levels adjustable live.
