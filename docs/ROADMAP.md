@@ -66,7 +66,7 @@
   - `getDisplayMedia` capture; simulcast encodings (LiveKit screen-share presets + our fps caps); audio with APM-off trio + `restrictOwnAudio`; stereo (`forceStereo`, munging) + audio presets (Voice/Balanced/Music, live-switchable); copy-link UX; honest per-browser audio messaging (04 Matrix B).
   - **Accept:** Chrome full e2e: share screen+audio → 2+ viewers, tiers switch, stereo confirmed at viewer (`getStats` channel count / audible test), audio preset switches live without a blip.
   - **Guards:** `degradationPreference` set explicitly (01 §2 trap); `contentHint` set; capture at native + enforce at encoder (02 §3); Firefox/Safari get a "no audio from this browser" notice, not silent failure.
-- [ ] **2.5 M1 smoke checklist**
+- [x] **2.5 M1 smoke checklist** *(done 2026-08-26 — executed against prod, 8/10 pass, 1 partial (encoder adaptation, by design), 1 deferred to 3.4; see docs/checklists/m1.md)*
   - Scripted manual checklist: 1 publisher + 3 concurrent viewers (one throttled via devtools), layer adaptation observed, reconnect on network blip, stream-end behavior.
   - **Accept:** checklist executed and committed as `docs/checklists/m1.md` with results.
 
