@@ -1,12 +1,11 @@
 // easyscreenshare desktop — tray-resident publisher shell.
-// 4.2/4.3 + audio routing: custom picker, publish, clipboard link, tray LIVE
-// state, quality submenus, and per-app audio routing:
-//   - screen share  → system audio MINUS exclusions (Discord filtered by
-//     default, re-armed live when Discord starts/stops mid-stream)
-//   - window share  → ONLY that app's audio (include-mode process loopback)
-// Both per-app paths ride Chromium's applicationLoopback/exclude device ids
-// through Electron's display-media escape hatch (research 04 §3 — the S1
-// spike shipping as a feature, with graceful fallback to plain loopback).
+// Custom picker, publish, clipboard link, tray LIVE state, quality submenus,
+// and per-app audio routing:
+//   - window share  → ONLY that app's audio (applicationLoopback:<pid> via
+//     Electron's display-media escape hatch — S1 CONFIRMED in the field)
+//   - screen share  → whole system audio (exclude-arbitrary-pid ids are a
+//     silent dead stream — S1 REFUTED; Discord exclusion awaits a native
+//     audio module, roadmap 5.2)
 import {
   app,
   BrowserWindow,
@@ -168,17 +167,10 @@ function main() {
       }
     }
     appTarget = null;
-    // Screen share (or window pid unresolved) → system minus exclusions.
-    if (settings.excludeDiscord && perAppSupported && process.platform === "win32") {
-      excludedPid = await discordRootPid();
-      if (excludedPid != null) {
-        armedAudio = {
-          id: `restrictOwnAudioBrowserLoopback:${excludedPid}`,
-          name: "System audio",
-        };
-        return;
-      }
-    }
+    // Screen share (or window pid unresolved) → whole system audio.
+    // S1 field verdict (2026-08-26): exclude-arbitrary-pid device ids produce
+    // a SILENT DEAD STREAM — Discord exclusion needs a native audio module
+    // (roadmap 5.2). Include-mode (window shares) is confirmed working.
     excludedPid = null;
     armedAudio = "loopback";
   };
@@ -201,10 +193,6 @@ function main() {
             const byExe = again ?? null; // title may have changed; best effort
             if (byExe && byExe.pid !== appTarget.pid) await rearmLive();
           }
-        } else if (settings.excludeDiscord && perAppSupported) {
-          // exclude-mode: Discord may start/stop/restart mid-stream
-          const now = await discordRootPid();
-          if (now !== excludedPid) await rearmLive();
         }
       })();
     }, 5000);
@@ -270,17 +258,14 @@ function main() {
       visible: process.platform === "win32",
       submenu: [
         {
-          label: perAppSupported
-            ? "Mute Discord in stream"
-            : "Mute Discord (unsupported on this system)",
+          label: "Mute Discord in stream (soon — needs native audio capture)",
           type: "checkbox",
-          checked: settings.excludeDiscord,
-          enabled: perAppSupported,
-          click: (item) => {
-            settings.excludeDiscord = item.checked;
-            saveSettings();
-            if (live && chosenSource?.isScreen) void rearmLive();
-          },
+          checked: false,
+          enabled: false,
+        },
+        {
+          label: "Tip: share the app's window to stream only its audio",
+          enabled: false,
         },
       ],
     },

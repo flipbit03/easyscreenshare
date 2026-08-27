@@ -313,7 +313,17 @@ Skip: Kap (dead since 2024, mic-only), Screenity (extension, tab audio only), `s
 
 ## 10. Gaps — things not verified
 
-1. **⚠️ The per-app escape hatch is UNTESTED.** Source strongly supports it but was not run. **Highest-value spike.**
+> **S1 FIELD VERDICT (2026-08-26, Windows 11, Electron 44, packaged app):**
+> - `applicationLoopback:<pid>` via the Electron escape hatch: **CONFIRMED.**
+>   Sharing a Spotify window streamed ONLY Spotify's audio; nothing else
+>   audible. Per-app include-mode capture works with zero native code.
+> - `restrictOwnAudioBrowserLoopback:<otherAppPid>` as exclude-arbitrary-pid:
+>   **REFUTED.** Produces the silent-dead-stream failure (no error thrown) —
+>   full-screen capture was completely mute. "System minus app" needs the
+>   native process-loopback EXCLUDE path (§3 native-module table).
+> - Dual simultaneous loopback captures: untested.
+
+1. ~~**⚠️ The per-app escape hatch is UNTESTED.**~~ **RESOLVED — see field verdict above.**
 2. **⚠️ Linux `audio: 'loopback'` in Electron without the feature flag.** Traced from source; wants a 20-minute empirical confirmation.
 3. **macOS 13.0–14.1 SCK-vs-Catap handoff** — final selection branch not read.
 4. **Browser-compat versions for `restrictOwnAudio` / `suppressLocalAudioPlayback`** — Chromium-only in practice; version numbers unconfirmed.

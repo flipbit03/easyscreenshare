@@ -37,6 +37,7 @@ opens the link watches in their browser. That's it.**
 | License | **MIT** | SignPath requires OSI + no dual-licensing; MIT qualifies |
 | Backend language | **Rust (axum)** | Mirrors the proven 2048wars stack/pipeline; official `livekit-api` crate covers tokens/rooms/webhooks; tiny binary on the 4 GB box. FE/desktop stay TS (forced by browser APIs); `ts-rs` generates shared API types |
 | E2EE | Build later as off-by-default "private stream" toggle; key in URL fragment | Encoded-transform is cross-browser Baseline; ~1 day on LiveKit (01) |
+| Per-app audio strategy | **Include-mode via Electron escape hatch** (window share = that app's audio only) — S1 field-CONFIRMED. Exclude-mode ("system minus Discord") REFUTED as silent dead stream; needs native process-loopback module (5.2) | S1 verdict 2026-08-26, research 04 §10 |
 
 ## Components
 

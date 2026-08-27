@@ -30,7 +30,7 @@
 
 ## Phase 1 — Spikes (M0: capability questions, throwaway code in `spikes/`)
 
-- [ ] **S1 Per-app audio escape hatch** *(needs Windows 11 — manual run + report back)*
+- [x] **S1 Per-app audio escape hatch** *(done 2026-08-26 — FIELD verdict on Windows 11: include-mode `applicationLoopback:<pid>` CONFIRMED (Spotify-window share streamed only Spotify audio); exclude-arbitrary-pid REFUTED (silent dead stream); dual-capture untested. Recorded in research 04 §10 + ARCHITECTURE decisions)*
   - Minimal Electron app testing three device-id forms via the picker callback: `applicationLoopback:<pid>` (include), `restrictOwnAudioBrowserLoopback:<otherAppPid>` (exclude-arbitrary hypothesis → live "exclude Discord"), and two simultaneous loopback captures (crossfade toggling).
   - **Accept:** written verdict per id form (works / dead-silent / rejected) appended to `docs/research/04-audio-capture.md`; ARCHITECTURE decisions log updated with the chosen per-app strategy.
   - **Guards:** verify audio by RMS, not by track existence (silent-dead-stream trap, 04 §9.1).
@@ -93,10 +93,10 @@
 - [ ] **4.1 App scaffold** — Forge + Vite plugin, tray icon + menu, single-instance lock, no visible window by default. *(built 2026-08-26; verified on Linux/WSLg: boots, tray installs, single-instance lock works (`app.setName` pinned so all launch modes share it), typecheck in CI. Pending for tick: tray visual on Windows — user run. Note: pnpm needed `publicHoistPattern` for the electron toolchain + registry override for @electron/node-gyp, both in pnpm-workspace.yaml)*
   - **Accept:** `pnpm --filter desktop start` shows tray on Windows; second launch focuses the first.
   - **Guards:** clipboard via preload bridge only (Electron 44 removed renderer clipboard, 02).
-- [ ] **4.2 Custom source picker** — window with screen/window thumbnails + app icons, system-audio checkbox (default ON), mic checkbox (default **OFF**).
+- [x] **4.2 Custom source picker** *(done 2026-08-26 — thumbnails+icons picker shipped in portable exe, used in the field)* — window with screen/window thumbnails + app icons, system-audio checkbox (default ON), mic checkbox (default **OFF**).
   - **Accept:** picker lists sources with live thumbnails; cancel path resolves cleanly; picking starts capture.
   - **Guards:** request-ID map for concurrent `getDisplayMedia` (02); ALWAYS call the callback incl. cancel; handler serialized behind a mutex (04 §9.12); Wayland branch stub (`XDG_SESSION_TYPE`) falls back to portal.
-- [ ] **4.3 Publish + link flow** — reuse `core` pipeline; on start: link in clipboard, native notification, tray icon red; tray menu: copy link / stop / quality.
+- [x] **4.3 Publish + link flow** *(done 2026-08-26 — tray→pick→clipboard link→viewer watched Spotify stream with per-app audio; tray LIVE menu with Copy link/Stop)* — reuse `core` pipeline; on start: link in clipboard, native notification, tray icon red; tray menu: copy link / stop / quality.
   - **Accept:** tray click → pick → link pasted to a friend → they watch, < 10 s of clicks; stop kills the room (viewers see "ended").
   - **Guards:** `powerSaveBlocker('prevent-display-sleep')` during share; audio constraints identical to 2.4 (APM off etc.).
 - [ ] **4.4 Quality + audio preset menus** — video tier cap (Auto/1080p60/1080p30/720p30…) and audio preset (Voice/Balanced/Music) switchable **while live**.
@@ -110,7 +110,7 @@
 ## Phase 5 — M3: Audio excellence
 
 - [ ] **5.1 Audio diagnostics** — in-app self-test: capture 200 ms, assert non-zero RMS + channel count + `getSettings` APM flags; surfaced in UI on failure.
-- [ ] **5.2 Per-app capture UI** *(shape depends on S1)* — "share only this app's audio" and/or live "exclude Discord" toggle; fallback: default-device routing guidance.
+- [ ] **5.2 Per-app capture UI** *(half done 2026-08-26: window share = that-app-only audio SHIPPED & field-confirmed; "exclude Discord from system audio" requires a native process-loopback EXCLUDE module (N-API; see research 04 §3 native table) — the escape-hatch exclude id is a silent dead stream)*
   - **Accept:** with Discord playing voice + game audio: viewers hear game only, toggle works mid-stream.
 - [ ] **5.3 Mic opt-in path** — Web Audio mixer (per-source gain), APM on for mic, RNNoise opt-in.
   - **Accept:** mic never captured unless enabled (verify: no `getUserMedia` call, no OS mic indicator); mix levels adjustable live.
