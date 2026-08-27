@@ -1,0 +1,24 @@
+{
+  "name": "@easyscreenshare/desktop",
+  "productName": "easyscreenshare",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Tray-to-link screensharing",
+  "main": ".vite/build/main.js",
+  "scripts": {
+    "start": "electron-forge start",
+    "package": "electron-forge package",
+    "make": "electron-forge make",
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@electron-forge/cli": "^7.11.0",
+    "@electron-forge/maker-zip": "^7.11.0",
+    "@electron-forge/plugin-vite": "^7.11.0",
+    "@electron-forge/shared-types": "^7.11.2",
+    "@types/node": "^24.13.3",
+    "electron": "^44.0.0",
+    "typescript": "~6.0.2",
+    "vite": "^8.2.2"
+  }
+}

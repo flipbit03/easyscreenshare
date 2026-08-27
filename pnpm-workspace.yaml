@@ -1,2 +1,10 @@
 packages:
   - packages/*
+overrides:
+  "@electron/node-gyp": "10.2.0-electron.2"
+# Electron Forge needs physical (non-symlinked) electron packages; hoist only
+# the electron toolchain, keep strict isolation for everything else.
+publicHoistPattern:
+  - "*electron*"
+  - "@electron/*"
+  - "@electron-forge/*"

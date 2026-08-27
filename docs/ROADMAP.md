@@ -90,7 +90,7 @@
 
 ## Phase 4 — M2: Electron tray app (Windows first)
 
-- [ ] **4.1 App scaffold** — Forge + Vite plugin, tray icon + menu, single-instance lock, no visible window by default.
+- [ ] **4.1 App scaffold** — Forge + Vite plugin, tray icon + menu, single-instance lock, no visible window by default. *(built 2026-08-26; verified on Linux/WSLg: boots, tray installs, single-instance lock works (`app.setName` pinned so all launch modes share it), typecheck in CI. Pending for tick: tray visual on Windows — user run. Note: pnpm needed `publicHoistPattern` for the electron toolchain + registry override for @electron/node-gyp, both in pnpm-workspace.yaml)*
   - **Accept:** `pnpm --filter desktop start` shows tray on Windows; second launch focuses the first.
   - **Guards:** clipboard via preload bridge only (Electron 44 removed renderer clipboard, 02).
 - [ ] **4.2 Custom source picker** — window with screen/window thumbnails + app icons, system-audio checkbox (default ON), mic checkbox (default **OFF**).
