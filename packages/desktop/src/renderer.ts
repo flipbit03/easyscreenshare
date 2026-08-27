@@ -1,4 +1,5 @@
 // Picker + publish pipeline renderer. Vanilla DOM — the surface is one grid.
+import { RoomEvent } from "livekit-client";
 import { startScreenShare, type PublishHandle } from "@easyscreenshare/core";
 import { AppAudioMixer } from "./mixer";
 import type { EssBridge, SourceInfo } from "./preload";
@@ -136,6 +137,7 @@ async function startShare(source: SourceInfo) {
       audioTrackOverride: mixer?.track,
     });
     handle.onEnded(() => void stopShare());
+    watchViewers(handle);
     window.ess.notifyLive(sess.shareUrl);
     renderStatus("You're live — this window can stay hidden.", false, audioSub);
   } catch (e) {
@@ -144,6 +146,27 @@ async function startShare(source: SourceInfo) {
     handle = null;
     renderStatus(e instanceof Error ? e.message : String(e), true);
   }
+}
+
+/** Report viewer count + connection-type breakdown to main for the tray.
+ * Viewers self-report their ICE path via the `conn` participant attribute. */
+function watchViewers(hd: PublishHandle) {
+  const push = () => {
+    const groups = new Map<string, number>();
+    let count = 0;
+    for (const p of hd.room.remoteParticipants.values()) {
+      if (!p.identity.startsWith("viewer-")) continue;
+      count++;
+      const key = p.attributes?.conn ?? "connecting…";
+      groups.set(key, (groups.get(key) ?? 0) + 1);
+    }
+    window.ess.updateViewers({ count, groups: [...groups.entries()] });
+  };
+  hd.room
+    .on(RoomEvent.ParticipantConnected, push)
+    .on(RoomEvent.ParticipantDisconnected, push)
+    .on(RoomEvent.ParticipantAttributesChanged, push);
+  push();
 }
 
 /** Single-capture rearm (window shares: the app restarted). */

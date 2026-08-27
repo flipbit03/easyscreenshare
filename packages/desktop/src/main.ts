@@ -76,6 +76,11 @@ function main() {
   let pollTimer: NodeJS.Timeout | null = null;
   /** include-mode target for window shares. */
   let appTarget: { pid: number; exe: string } | null = null;
+  /** Viewer telemetry pushed from the renderer (reads LiveKit attributes). */
+  let viewerStats: { count: number; groups: [string, number][] } = {
+    count: 0,
+    groups: [],
+  };
 
   // ---------- settings ----------
   const settingsPath = () => path.join(app.getPath("userData"), "settings.json");
@@ -367,14 +372,40 @@ function main() {
     },
   ];
 
+  /** Header lines: "● LIVE" then one disabled line per connection type,
+   * e.g. "3 viewers (direct · udp)". */
+  const viewerHeader = (): Electron.MenuItemConstructorOptions[] => {
+    const lines: Electron.MenuItemConstructorOptions[] = [
+      { label: "● LIVE", enabled: false },
+    ];
+    if (viewerStats.count === 0) {
+      lines.push({ label: "no viewers yet", enabled: false });
+    } else {
+      for (const [conn, n] of viewerStats.groups) {
+        lines.push({
+          label: `${n} ${n === 1 ? "viewer" : "viewers"} (${conn})`,
+          enabled: false,
+        });
+      }
+    }
+    return lines;
+  };
+
   const updateTray = () => {
     if (!tray) return;
-    tray.setToolTip(live ? "easyscreenshare — LIVE" : "easyscreenshare");
+    tray.setToolTip(
+      live
+        ? `easyscreenshare — LIVE: ${viewerStats.count} ${
+            viewerStats.count === 1 ? "viewer" : "viewers"
+          }`
+        : "easyscreenshare",
+    );
     tray.setContextMenu(
       Menu.buildFromTemplate(
         live
           ? [
-              { label: "● LIVE", enabled: false },
+              ...viewerHeader(),
+              { type: "separator" },
               { label: "Copy link", click: () => clipboard.writeText(shareUrl) },
               { label: "Stop sharing", click: () => requestStop() },
               { type: "separator" },
@@ -475,6 +506,14 @@ function main() {
     pokeActivation();
   });
 
+  ipcMain.on(
+    "viewers:update",
+    (_e, stats: { count: number; groups: [string, number][] }) => {
+      viewerStats = stats;
+      if (live) updateTray();
+    },
+  );
+
   ipcMain.handle("settings:get", () => settings);
 
   ipcMain.handle("session:create", async () => {
@@ -507,6 +546,7 @@ function main() {
     appTarget = null;
     mixerActive = false;
     mixerArmPid = null;
+    viewerStats = { count: 0, groups: [] };
     stopPolling();
     updateTray();
     win?.close();

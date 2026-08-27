@@ -45,6 +45,8 @@ const api = {
   }> => ipcRenderer.invoke("session:create"),
   notifyLive: (shareUrl: string) => ipcRenderer.send("share:live", shareUrl),
   notifyStopped: () => ipcRenderer.send("share:stopped"),
+  updateViewers: (stats: { count: number; groups: [string, number][] }) =>
+    ipcRenderer.send("viewers:update", stats),
   onStopRequested: (cb: () => void) => {
     ipcRenderer.on("share:stop", cb);
   },
