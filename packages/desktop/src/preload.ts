@@ -1,5 +1,6 @@
-// Bridge between the picker/pipeline renderer and main. Clipboard, capture
-// source enumeration, audio arming, and session creation all live in main.
+// Bridge between the picker/pipeline renderer and main. Capture-source
+// enumeration and audio arming live in main; session creation + heartbeat run
+// in the renderer via @easyscreenshare/core (CORS is enabled server-side).
 import { contextBridge, ipcRenderer } from "electron";
 
 export interface SourceInfo {
@@ -22,33 +23,29 @@ export interface ArmResult {
 }
 
 const api = {
+  serverUrl: (): Promise<string> => ipcRenderer.invoke("app:server-url"),
   listSources: (): Promise<SourceInfo[]> => ipcRenderer.invoke("picker:list"),
-  /** Arms the display-media handler for the chosen source and reports the
-   * audio plan: per-app mixer (screen shares) or single capture. */
   chooseSource: (source: {
     id: string;
     name: string;
     isScreen: boolean;
   }): Promise<ArmResult> => ipcRenderer.invoke("picker:choose", source),
-  /** Arms the NEXT getDisplayMedia call to capture one app's audio. */
   armAudio: (pid: number): Promise<void> => ipcRenderer.invoke("audio:arm", pid),
   getSettings: (): Promise<{
     audioPreset: "voice" | "balanced" | "music";
     videoMode: "motion" | "text";
     excludedApps: string[];
   }> => ipcRenderer.invoke("settings:get"),
-  createSession: (): Promise<{
-    sessionId: string;
-    shareUrl: string;
-    publisherToken: string;
-    livekitUrl: string;
-  }> => ipcRenderer.invoke("session:create"),
   notifyLive: (shareUrl: string) => ipcRenderer.send("share:live", shareUrl),
   notifyStopped: () => ipcRenderer.send("share:stopped"),
+  hidePicker: () => ipcRenderer.send("picker:hide"),
   updateViewers: (stats: { count: number; groups: [string, number][] }) =>
     ipcRenderer.send("viewers:update", stats),
   onStopRequested: (cb: () => void) => {
     ipcRenderer.on("share:stop", cb);
+  },
+  onSwitchSource: (cb: () => void) => {
+    ipcRenderer.on("picker:switch", cb);
   },
   onAudioRearm: (cb: () => void) => {
     ipcRenderer.on("audio:rearm", cb);

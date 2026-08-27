@@ -1,8 +1,14 @@
 // Picker + publish pipeline renderer. Vanilla DOM — the surface is one grid.
 import { RoomEvent } from "livekit-client";
-import { startScreenShare, type PublishHandle } from "@easyscreenshare/core";
+import {
+  NameTakenError,
+  SYSTEM_AUDIO_CONSTRAINTS,
+  createSession,
+  startScreenShare,
+  type PublishHandle,
+} from "@easyscreenshare/core";
 import { AppAudioMixer } from "./mixer";
-import type { EssBridge, SourceInfo } from "./preload";
+import type { ArmResult, EssBridge, SourceInfo } from "./preload";
 import "./picker.css";
 
 declare global {
@@ -14,6 +20,9 @@ declare global {
 const app = document.getElementById("app")!;
 let handle: PublishHandle | null = null;
 let mixer: AppAudioMixer | null = null;
+let vanityName = "";
+let serverUrl = "";
+void window.ess.serverUrl().then((u) => (serverUrl = u));
 
 function h<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -26,10 +35,13 @@ function h<K extends keyof HTMLElementTagNameMap>(
   return el;
 }
 
-async function renderPicker() {
+/** mode "start" begins a new share; "switch" swaps the source of the live one. */
+async function renderPicker(mode: "start" | "switch" = "start") {
   app.replaceChildren();
   const head = h("header", "head");
-  head.append(h("h1", undefined, "Share your screen"));
+  head.append(
+    h("h1", undefined, mode === "switch" ? "Switch source" : "Share your screen"),
+  );
   head.append(
     h(
       "p",
@@ -38,6 +50,24 @@ async function renderPicker() {
     ),
   );
   app.append(head);
+
+  if (mode === "start") {
+    const nameRow = h("div", "name-row");
+    const field = h("label", "name-field");
+    field.append(h("span", "name-prefix", "/s/"));
+    const input = h("input") as HTMLInputElement;
+    input.type = "text";
+    input.placeholder = "custom name (optional)";
+    input.value = vanityName;
+    input.maxLength = 32;
+    input.addEventListener("input", () => {
+      input.value = input.value.replace(/[^A-Za-z0-9_-]/g, "");
+      vanityName = input.value;
+    });
+    field.append(input);
+    nameRow.append(field);
+    app.append(nameRow);
+  }
 
   const grid = h("div", "grid");
   app.append(grid);
@@ -73,7 +103,9 @@ async function renderPicker() {
       }
       cap.append(h("span", "name", s.name));
       card.append(cap);
-      card.addEventListener("click", () => void startShare(s));
+      card.addEventListener("click", () =>
+        void (mode === "switch" ? switchSource(s) : startShare(s)),
+      );
       row.append(card);
     }
   };
@@ -94,6 +126,29 @@ function renderStatus(text: string, isError = false, sub?: string) {
   app.append(box);
 }
 
+/** Build the audio track for a source per its arm plan. Manages `mixer` and
+ * returns { track (undefined = let the video capture supply app audio), sub }. */
+async function buildAudio(
+  source: SourceInfo,
+  armed: ArmResult,
+): Promise<{ track?: MediaStreamTrack; sub: string }> {
+  mixer?.stop();
+  mixer = null;
+  if (armed.mixer) {
+    mixer = new AppAudioMixer(window.ess, armed.excludedApps);
+    const ok = await mixer.addAll(armed.roots);
+    if (ok === 0) {
+      mixer.stop();
+      mixer = null;
+      return { sub: "Audio: system (per-app mix unavailable)" };
+    }
+    const muted = armed.excludedApps.length ? " — Discord muted" : "";
+    return { track: mixer.track, sub: `Audio: ${ok} apps mixed${muted}` };
+  }
+  // Window / fallback: the video capture itself carries the app's audio.
+  return { sub: source.isScreen ? "Audio: system" : "Audio: this app only" };
+}
+
 async function startShare(source: SourceInfo) {
   renderStatus("Starting…");
   try {
@@ -103,53 +158,71 @@ async function startShare(source: SourceInfo) {
       isScreen: source.isScreen,
     });
     const settings = await window.ess.getSettings();
+    if (armed.mixer) renderStatus("Starting…", false, "capturing app audio…");
+    const audio = await buildAudio(source, armed);
 
-    // Screen shares: build the per-app mix BEFORE the main capture so its
-    // track can be published as the stream audio.
-    let audioSub = "Audio: system";
-    if (armed.mixer) {
-      renderStatus("Starting…", false, "capturing app audio…");
-      mixer = new AppAudioMixer(window.ess, armed.excludedApps);
-      const ok = await mixer.addAll(armed.roots);
-      if (ok === 0) {
-        // Mixer produced nothing — fall back to plain system loopback so
-        // the share still carries audio.
-        mixer.stop();
-        mixer = null;
-        audioSub = "Audio: system (per-app mix unavailable)";
-      } else {
-        const muted = armed.excludedApps.length
-          ? " — Discord muted"
-          : "";
-        audioSub = `Audio: ${ok} apps mixed${muted}`;
-      }
-    } else if (!source.isScreen) {
-      audioSub = "Audio: this app only";
-    }
-
-    const sess = await window.ess.createSession();
+    const sess = await createSession(vanityName.trim() || undefined, serverUrl);
     handle = await startScreenShare({
       livekitUrl: sess.livekitUrl,
       token: sess.publisherToken,
       audio: true,
       audioPreset: settings.audioPreset,
       videoMode: settings.videoMode,
-      audioTrackOverride: mixer?.track,
+      audioTrackOverride: audio.track,
+      heartbeat: {
+        sessionId: sess.sessionId,
+        secret: sess.sessionSecret,
+        baseUrl: serverUrl,
+      },
     });
     handle.onEnded(() => void stopShare());
     watchViewers(handle);
     window.ess.notifyLive(sess.shareUrl);
-    renderStatus("You're live — this window can stay hidden.", false, audioSub);
+    renderStatus("You're live — this window can stay hidden.", false, audio.sub);
   } catch (e) {
     mixer?.stop();
     mixer = null;
     handle = null;
+    if (e instanceof NameTakenError) {
+      renderStatus(`"${vanityName}" is in use right now — pick another name.`, true);
+    } else {
+      renderStatus(e instanceof Error ? e.message : String(e), true);
+    }
+  }
+}
+
+/** Swap the live source (screen ↔ window) without dropping the stream/link. */
+async function switchSource(source: SourceInfo) {
+  if (!handle) return void renderPicker();
+  renderStatus("Switching…");
+  try {
+    const armed = await window.ess.chooseSource({
+      id: source.id,
+      name: source.name,
+      isScreen: source.isScreen,
+    });
+    // New video (+ app audio when it's a window share) from the new source.
+    const stream = await navigator.mediaDevices.getDisplayMedia({
+      video: true,
+      audio: source.isScreen ? false : SYSTEM_AUDIO_CONSTRAINTS,
+    } as DisplayMediaStreamOptions);
+    const newVideo = stream.getVideoTracks()[0];
+    if (newVideo) await handle.replaceVideoTrack(newVideo);
+
+    const audio = await buildAudio(source, armed);
+    if (audio.track) {
+      await handle.replaceAudioTrack(audio.track);
+    } else {
+      const appAudio = stream.getAudioTracks()[0];
+      if (appAudio) await handle.replaceAudioTrack(appAudio);
+    }
+    window.ess.hidePicker();
+  } catch (e) {
     renderStatus(e instanceof Error ? e.message : String(e), true);
   }
 }
 
-/** Report viewer count + connection-type breakdown to main for the tray.
- * Viewers self-report their ICE path via the `conn` participant attribute. */
+/** Report viewer count + connection-type breakdown to main for the tray. */
 function watchViewers(hd: PublishHandle) {
   const push = () => {
     const groups = new Map<string, number>();
@@ -195,6 +268,7 @@ async function stopShare() {
 }
 
 window.ess.onStopRequested(() => void stopShare());
+window.ess.onSwitchSource(() => void renderPicker("switch"));
 window.ess.onAudioRearm(() => void rearmAudio());
 window.ess.onMixerSync((diff) => void mixer?.sync(diff));
 window.ess.onExcludeSet((list) => mixer?.setExcluded(list));

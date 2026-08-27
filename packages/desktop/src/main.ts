@@ -407,6 +407,13 @@ function main() {
               ...viewerHeader(),
               { type: "separator" },
               { label: "Copy link", click: () => clipboard.writeText(shareUrl) },
+              {
+                label: "Change what you're sharing…",
+                click: () => {
+                  openPicker();
+                  win?.webContents.send("picker:switch");
+                },
+              },
               { label: "Stop sharing", click: () => requestStop() },
               { type: "separator" },
               ...settingsSubmenus(),
@@ -516,11 +523,9 @@ function main() {
 
   ipcMain.handle("settings:get", () => settings);
 
-  ipcMain.handle("session:create", async () => {
-    const res = await fetch(`${SERVER_URL}/api/sessions`, { method: "POST" });
-    if (!res.ok) throw new Error(`session create failed: HTTP ${res.status}`);
-    return res.json();
-  });
+  ipcMain.handle("app:server-url", () => SERVER_URL);
+
+  ipcMain.on("picker:hide", () => win?.hide());
 
   ipcMain.on("share:live", (_e, url: string) => {
     live = true;
