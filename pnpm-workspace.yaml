@@ -7,6 +7,11 @@ packages:
 onlyBuiltDependencies:
   - electron
   - esbuild
+# Explicitly ignored so pnpm records the decision and doesn't fail
+# --frozen-lockfile: Squirrel's installer builder isn't needed for the
+# portable exe.
+ignoredBuiltDependencies:
+  - electron-winstaller
 overrides:
   "@electron/node-gyp": "10.2.0-electron.2"
 # Electron Forge needs physical (non-symlinked) electron packages; hoist only
