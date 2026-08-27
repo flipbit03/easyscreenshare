@@ -110,7 +110,7 @@
 ## Phase 5 — M3: Audio excellence
 
 - [ ] **5.1 Audio diagnostics** — in-app self-test: capture 200 ms, assert non-zero RMS + channel count + `getSettings` APM flags; surfaced in UI on failure.
-- [ ] **5.2 Per-app capture UI** *(half done 2026-08-26: window share = that-app-only audio SHIPPED & field-confirmed; "exclude Discord from system audio" requires a native process-loopback EXCLUDE module (N-API; see research 04 §3 native table) — the escape-hatch exclude id is a silent dead stream)*
+- [ ] **5.2 Per-app capture UI** *(built 2026-08-26, awaiting field verdict: screen shares now use a ZERO-NATIVE per-app mixer — one include-mode capture per windowed tree root, Web Audio mix, exclusions as zero-gain (instant Discord toggle, mid-stream launches covered by 5s poll). Window share = that-app-only audio remains field-confirmed. Chromium source verified: no exclude-arbitrary-app device id exists. Field risks: N concurrent app-loopback captures; gestureless follow-up gDM (activation poked via sendInputEvent))*
   - **Accept:** with Discord playing voice + game audio: viewers hear game only, toggle works mid-stream.
 - [ ] **5.3 Mic opt-in path** — Web Audio mixer (per-source gain), APM on for mic, RNNoise opt-in.
   - **Accept:** mic never captured unless enabled (verify: no `getUserMedia` call, no OS mic indicator); mix levels adjustable live.
