@@ -1,9 +1,6 @@
 // Picker + publish pipeline renderer. Vanilla DOM — the surface is one grid.
-import {
-  SYSTEM_AUDIO_CONSTRAINTS,
-  startScreenShare,
-  type PublishHandle,
-} from "@easyscreenshare/core";
+import { startScreenShare, type PublishHandle } from "@easyscreenshare/core";
+import { AppAudioMixer } from "./mixer";
 import type { EssBridge, SourceInfo } from "./preload";
 import "./picker.css";
 
@@ -15,6 +12,7 @@ declare global {
 
 const app = document.getElementById("app")!;
 let handle: PublishHandle | null = null;
+let mixer: AppAudioMixer | null = null;
 
 function h<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -35,7 +33,7 @@ async function renderPicker() {
     h(
       "p",
       "sub",
-      "A screen streams system audio (Discord muted by default) — a window streams only that app's audio.",
+      "A screen streams per-app mixed audio (Discord muted by default) — a window streams only that app's audio.",
     ),
   );
   app.append(head);
@@ -95,7 +93,7 @@ function renderStatus(text: string, isError = false, sub?: string) {
   app.append(box);
 }
 
-async function startShare(source: SourceInfo, isRetry = false) {
+async function startShare(source: SourceInfo) {
   renderStatus("Starting…");
   try {
     const armed = await window.ess.chooseSource({
@@ -104,6 +102,30 @@ async function startShare(source: SourceInfo, isRetry = false) {
       isScreen: source.isScreen,
     });
     const settings = await window.ess.getSettings();
+
+    // Screen shares: build the per-app mix BEFORE the main capture so its
+    // track can be published as the stream audio.
+    let audioSub = "Audio: system";
+    if (armed.mixer) {
+      renderStatus("Starting…", false, "capturing app audio…");
+      mixer = new AppAudioMixer(window.ess, armed.excludedApps);
+      const ok = await mixer.addAll(armed.roots);
+      if (ok === 0) {
+        // Mixer produced nothing — fall back to plain system loopback so
+        // the share still carries audio.
+        mixer.stop();
+        mixer = null;
+        audioSub = "Audio: system (per-app mix unavailable)";
+      } else {
+        const muted = armed.excludedApps.length
+          ? " — Discord muted"
+          : "";
+        audioSub = `Audio: ${ok} apps mixed${muted}`;
+      }
+    } else if (!source.isScreen) {
+      audioSub = "Audio: this app only";
+    }
+
     const sess = await window.ess.createSession();
     handle = await startScreenShare({
       livekitUrl: sess.livekitUrl,
@@ -111,37 +133,26 @@ async function startShare(source: SourceInfo, isRetry = false) {
       audio: true,
       audioPreset: settings.audioPreset,
       videoMode: settings.videoMode,
+      audioTrackOverride: mixer?.track,
     });
     handle.onEnded(() => void stopShare());
     window.ess.notifyLive(sess.shareUrl);
-    renderStatus(
-      "You're live — this window can stay hidden.",
-      false,
-      armed.perApp
-        ? "Audio: this app only"
-        : armed.excludedDiscord
-          ? "Audio: system (Discord muted)"
-          : "Audio: system",
-    );
+    renderStatus("You're live — this window can stay hidden.", false, audioSub);
   } catch (e) {
+    mixer?.stop();
+    mixer = null;
     handle = null;
-    // Per-app device ids are the experimental part (S1): if the capture
-    // failed while they were armed, disarm and retry ONCE on plain loopback.
-    if (!isRetry && (await window.ess.reportExclusionUnsupported())) {
-      return startShare(source, true);
-    }
     renderStatus(e instanceof Error ? e.message : String(e), true);
   }
 }
 
-/** Main re-armed the audio routing (Discord appeared/vanished, app restarted):
- * capture a fresh audio track and swap it into the live publication. */
+/** Single-capture rearm (window shares: the app restarted). */
 async function rearmAudio() {
-  if (!handle) return;
+  if (!handle || mixer) return;
   try {
     const stream = await navigator.mediaDevices.getDisplayMedia({
       video: true,
-      audio: SYSTEM_AUDIO_CONSTRAINTS,
+      audio: true,
     } as DisplayMediaStreamOptions);
     for (const t of stream.getVideoTracks()) t.stop();
     const audio = stream.getAudioTracks()[0];
@@ -155,11 +166,15 @@ async function stopShare() {
   const hd = handle;
   handle = null;
   if (hd) await hd.stop().catch(() => {});
+  mixer?.stop();
+  mixer = null;
   window.ess.notifyStopped();
 }
 
 window.ess.onStopRequested(() => void stopShare());
 window.ess.onAudioRearm(() => void rearmAudio());
+window.ess.onMixerSync((diff) => void mixer?.sync(diff));
+window.ess.onExcludeSet((list) => mixer?.setExcluded(list));
 window.ess.onAudioPreset((name) => void handle?.setAudioPreset(name));
 window.ess.onVideoMode((name) => void handle?.setVideoMode(name));
 

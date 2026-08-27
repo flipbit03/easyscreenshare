@@ -10,20 +10,32 @@ export interface SourceInfo {
   appIcon: string | null;
 }
 
+export interface AudioRoot {
+  pid: number;
+  name: string;
+}
+
+export interface ArmResult {
+  mixer: boolean;
+  roots: AudioRoot[];
+  excludedApps: string[];
+}
+
 const api = {
   listSources: (): Promise<SourceInfo[]> => ipcRenderer.invoke("picker:list"),
-  /** Arms the display-media handler (source + audio routing). Resolves with
-   * what got armed so the UI can say "app audio only" / "Discord muted". */
+  /** Arms the display-media handler for the chosen source and reports the
+   * audio plan: per-app mixer (screen shares) or single capture. */
   chooseSource: (source: {
     id: string;
     name: string;
     isScreen: boolean;
-  }): Promise<{ perApp: boolean; excludedDiscord: boolean }> =>
-    ipcRenderer.invoke("picker:choose", source),
+  }): Promise<ArmResult> => ipcRenderer.invoke("picker:choose", source),
+  /** Arms the NEXT getDisplayMedia call to capture one app's audio. */
+  armAudio: (pid: number): Promise<void> => ipcRenderer.invoke("audio:arm", pid),
   getSettings: (): Promise<{
     audioPreset: "voice" | "balanced" | "music";
     videoMode: "motion" | "text";
-    excludeDiscord: boolean;
+    excludedApps: string[];
   }> => ipcRenderer.invoke("settings:get"),
   createSession: (): Promise<{
     sessionId: string;
@@ -31,9 +43,6 @@ const api = {
     publisherToken: string;
     livekitUrl: string;
   }> => ipcRenderer.invoke("session:create"),
-  /** Reports that per-app device ids failed; true = disarmed, retry once. */
-  reportExclusionUnsupported: (): Promise<boolean> =>
-    ipcRenderer.invoke("audio:exclusion-unsupported"),
   notifyLive: (shareUrl: string) => ipcRenderer.send("share:live", shareUrl),
   notifyStopped: () => ipcRenderer.send("share:stopped"),
   onStopRequested: (cb: () => void) => {
@@ -41,6 +50,12 @@ const api = {
   },
   onAudioRearm: (cb: () => void) => {
     ipcRenderer.on("audio:rearm", cb);
+  },
+  onMixerSync: (cb: (diff: { add: AudioRoot[]; remove: number[] }) => void) => {
+    ipcRenderer.on("audio:mixer-sync", (_e, diff) => cb(diff));
+  },
+  onExcludeSet: (cb: (excludedApps: string[]) => void) => {
+    ipcRenderer.on("audio:exclude-set", (_e, list) => cb(list));
   },
   onAudioPreset: (cb: (name: "voice" | "balanced" | "music") => void) => {
     ipcRenderer.on("settings:audio", (_e, name) => cb(name));

@@ -1,11 +1,14 @@
 // easyscreenshare desktop — tray-resident publisher shell.
-// Custom picker, publish, clipboard link, tray LIVE state, quality submenus,
-// and per-app audio routing:
-//   - window share  → ONLY that app's audio (applicationLoopback:<pid> via
-//     Electron's display-media escape hatch — S1 CONFIRMED in the field)
-//   - screen share  → whole system audio (exclude-arbitrary-pid ids are a
-//     silent dead stream — S1 REFUTED; Discord exclusion awaits a native
-//     audio module, roadmap 5.2)
+//
+// Audio routing (all zero-native-code, field-informed by S1):
+//   - window share → ONLY that app's audio: single include-mode capture
+//     (applicationLoopback:<pid> — S1 CONFIRMED).
+//   - screen share → per-app MIXER: one include-mode capture per windowed
+//     process-tree root, mixed in the renderer via Web Audio. Exclusions
+//     (Discord by default) are gain nodes at zero — instant toggles, and
+//     apps appearing mid-stream get wired into the live graph. Chromium has
+//     NO exclude-arbitrary-app device id (verified against Chromium source),
+//     so exclusion-by-mixing is the zero-native path.
 import {
   app,
   BrowserWindow,
@@ -27,7 +30,8 @@ declare const PICKER_VITE_DEV_SERVER_URL: string | undefined;
 declare const PICKER_VITE_NAME: string;
 
 const SERVER_URL = process.env.ESS_SERVER ?? "https://easyscreenshare.flipbit03.com";
-const DISCORD_EXES = ["Discord.exe", "DiscordPTB.exe", "DiscordCanary.exe"];
+/** Normalized (lowercase, no .exe) names muted by the Discord toggle. */
+const DISCORD_APPS = ["discord", "discordptb", "discordcanary"];
 
 type AudioPresetName = "voice" | "balanced" | "music";
 type VideoModeName = "motion" | "text";
@@ -35,7 +39,12 @@ type VideoModeName = "motion" | "text";
 interface Settings {
   audioPreset: AudioPresetName;
   videoMode: VideoModeName;
-  excludeDiscord: boolean;
+  excludedApps: string[];
+}
+
+export interface AudioRoot {
+  pid: number;
+  name: string; // normalized: lowercase, no extension
 }
 
 app.setName("easyscreenshare");
@@ -57,15 +66,16 @@ function main() {
   let live = false;
   let shareUrl = "";
   let chosenSource: { id: string; name: string; isScreen: boolean } | null = null;
-  /** Device the display-media handler answers with. Recomputed by arm(). */
-  let armedAudio: "loopback" | { id: string; name: string } | undefined;
-  /** Whether the per-app device ids work on this system (S1 verdict). */
-  let perAppSupported = true;
-  /** include-mode target for window shares: resolved process. */
-  let appTarget: { pid: number; exe: string } | null = null;
-  /** exclude-mode target while screen-sharing. */
-  let excludedPid: number | null = null;
+  /** Single-capture audio for the main/window gDM call. */
+  let baseAudio: "loopback" | { id: string; name: string } | undefined;
+  /** One-shot arm for the mixer's next capture (consumed by the handler). */
+  let mixerArmPid: number | null = null;
+  /** Whether the current share uses the per-app mixer. */
+  let mixerActive = false;
+  let lastRoots: AudioRoot[] = [];
   let pollTimer: NodeJS.Timeout | null = null;
+  /** include-mode target for window shares. */
+  let appTarget: { pid: number; exe: string } | null = null;
 
   // ---------- settings ----------
   const settingsPath = () => path.join(app.getPath("userData"), "settings.json");
@@ -73,10 +83,11 @@ function main() {
     const defaults: Settings = {
       audioPreset: "balanced",
       videoMode: "motion",
-      excludeDiscord: true,
+      excludedApps: [...DISCORD_APPS],
     };
     try {
-      return { ...defaults, ...JSON.parse(fs.readFileSync(settingsPath(), "utf8")) };
+      const loaded = JSON.parse(fs.readFileSync(settingsPath(), "utf8"));
+      return { ...defaults, ...loaded };
     } catch {
       return defaults;
     }
@@ -97,7 +108,7 @@ function main() {
       execFile(
         "powershell.exe",
         ["-NoProfile", "-NonInteractive", "-Command", cmd],
-        { timeout: 8000, windowsHide: true },
+        { timeout: 8000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 },
         (err, stdout) => {
           if (err || !stdout.trim()) return resolve(null);
           try {
@@ -110,20 +121,53 @@ function main() {
     });
 
   const asArray = (v: unknown): Record<string, unknown>[] =>
-    v == null ? [] : Array.isArray(v) ? (v as Record<string, unknown>[]) : [v as Record<string, unknown>];
+    v == null
+      ? []
+      : Array.isArray(v)
+        ? (v as Record<string, unknown>[])
+        : [v as Record<string, unknown>];
 
-  /** Root of Discord's process tree (audio children live under it). */
-  const discordRootPid = async (): Promise<number | null> => {
-    const filter = DISCORD_EXES.map((e) => `Name='${e}'`).join(" OR ");
-    const rows = asArray(
-      await psJson(
-        `Get-CimInstance Win32_Process -Filter "${filter}" | Select-Object ProcessId,ParentProcessId | ConvertTo-Json`,
-      ),
+  const normName = (s: string) => s.toLowerCase().replace(/\.exe$/, "");
+
+  /** Windowed process-tree ROOTS: every process with a real window whose
+   * ancestors have no window of their own. Capturing each root's tree
+   * (applicationLoopback includes descendants) covers browsers' audio
+   * subprocesses; silent apps just contribute zeros to the mix. */
+  const listAudioRoots = async (): Promise<AudioRoot[]> => {
+    const data = (await psJson(
+      `$p = Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name; ` +
+        `$w = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -ExpandProperty Id; ` +
+        `@{procs=$p; windowed=$w} | ConvertTo-Json -Depth 4 -Compress`,
+    )) as { procs?: unknown; windowed?: unknown } | null;
+    if (!data) return [];
+    const procs = asArray(data.procs).map((r) => ({
+      pid: Number(r.ProcessId),
+      ppid: Number(r.ParentProcessId),
+      name: normName(String(r.Name ?? "")),
+    }));
+    const byPid = new Map(procs.map((p) => [p.pid, p]));
+    const windowed = new Set(
+      (Array.isArray(data.windowed) ? data.windowed : [data.windowed]).map(Number),
     );
-    if (!rows.length) return null;
-    const pids = new Set(rows.map((r) => Number(r.ProcessId)));
-    const root = rows.find((r) => !pids.has(Number(r.ParentProcessId)));
-    return root ? Number(root.ProcessId) : Number(rows[0].ProcessId);
+    const hasWindowedAncestor = (pid: number): boolean => {
+      let cur = byPid.get(pid)?.ppid;
+      const seen = new Set<number>();
+      while (cur && byPid.has(cur) && !seen.has(cur)) {
+        if (windowed.has(cur)) return true;
+        seen.add(cur);
+        cur = byPid.get(cur)?.ppid;
+      }
+      return false;
+    };
+    const roots: AudioRoot[] = [];
+    for (const p of procs) {
+      if (!windowed.has(p.pid)) continue;
+      if (hasWindowedAncestor(p.pid)) continue;
+      if (p.pid === process.pid) continue;
+      if (p.name === "easyscreenshare") continue; // never capture ourselves
+      roots.push({ pid: p.pid, name: p.name });
+    }
+    return roots;
   };
 
   /** Owning process of a shared window, resolved by its title. */
@@ -140,44 +184,57 @@ function main() {
     return { pid: Number(rows[0].Id), exe: String(rows[0].ProcessName) };
   };
 
-  const pidAlive = async (pid: number): Promise<boolean> =>
-    asArray(
-      await psJson(`Get-Process -Id ${pid} -ErrorAction SilentlyContinue | Select-Object Id | ConvertTo-Json`),
-    ).length > 0;
-
   // ---------- audio arming ----------
-  const arm = async () => {
+  const armForChoice = async (): Promise<{
+    mixer: boolean;
+    roots: AudioRoot[];
+    excludedApps: string[];
+  }> => {
+    mixerActive = false;
+    appTarget = null;
+    lastRoots = [];
     if (process.platform === "linux") {
-      armedAudio = undefined; // whole-system only, tier 2 (research 04)
-      return;
+      baseAudio = undefined; // tier 2: no loopback arming (research 04)
+      return { mixer: false, roots: [], excludedApps: [] };
     }
-    if (!chosenSource) {
-      armedAudio = "loopback";
-      return;
+    if (process.platform !== "win32") {
+      baseAudio = "loopback";
+      return { mixer: false, roots: [], excludedApps: [] };
     }
-    if (!chosenSource.isScreen && perAppSupported && process.platform === "win32") {
-      // Window share → ONLY that app's audio.
+    if (chosenSource && !chosenSource.isScreen) {
+      // Window share → single include-mode capture (S1 CONFIRMED).
       appTarget = await windowProcessByTitle(chosenSource.name);
       if (appTarget) {
-        armedAudio = {
-          id: `applicationLoopback:${appTarget.pid}`,
-          name: "App audio",
-        };
-        return;
+        baseAudio = { id: `applicationLoopback:${appTarget.pid}`, name: "App audio" };
+        return { mixer: false, roots: [], excludedApps: [] };
       }
+      baseAudio = "loopback";
+      return { mixer: false, roots: [], excludedApps: [] };
     }
-    appTarget = null;
-    // Screen share (or window pid unresolved) → whole system audio.
-    // S1 field verdict (2026-08-26): exclude-arbitrary-pid device ids produce
-    // a SILENT DEAD STREAM — Discord exclusion needs a native audio module
-    // (roadmap 5.2). Include-mode (window shares) is confirmed working.
-    excludedPid = null;
-    armedAudio = "loopback";
+    // Screen share → per-app mixer.
+    baseAudio = undefined; // mixer supplies the track; main gDM is video-only
+    lastRoots = await listAudioRoots();
+    mixerActive = true;
+    return { mixer: true, roots: lastRoots, excludedApps: settings.excludedApps };
   };
 
-  const rearmLive = async () => {
-    await arm();
-    win?.webContents.send("audio:rearm");
+  /** Real input event so follow-up getDisplayMedia calls carry activation. */
+  const pokeActivation = () => {
+    win?.webContents.sendInputEvent({ type: "mouseMove", x: 2, y: 2 });
+    win?.webContents.sendInputEvent({
+      type: "mouseDown",
+      x: 2,
+      y: 2,
+      button: "left",
+      clickCount: 1,
+    });
+    win?.webContents.sendInputEvent({
+      type: "mouseUp",
+      x: 2,
+      y: 2,
+      button: "left",
+      clickCount: 1,
+    });
   };
 
   const startPolling = () => {
@@ -186,12 +243,23 @@ function main() {
     pollTimer = setInterval(() => {
       void (async () => {
         if (!live || !chosenSource) return;
-        if (appTarget) {
-          // include-mode: follow the app across restarts
-          if (!(await pidAlive(appTarget.pid))) {
-            const again = await windowProcessByTitle(chosenSource.name);
-            const byExe = again ?? null; // title may have changed; best effort
-            if (byExe && byExe.pid !== appTarget.pid) await rearmLive();
+        if (mixerActive) {
+          const now = await listAudioRoots();
+          const nowPids = new Set(now.map((r) => r.pid));
+          const prevPids = new Set(lastRoots.map((r) => r.pid));
+          const add = now.filter((r) => !prevPids.has(r.pid));
+          const remove = [...prevPids].filter((p) => !nowPids.has(p));
+          if (add.length || remove.length) {
+            lastRoots = now;
+            win?.webContents.send("audio:mixer-sync", { add, remove });
+            updateTray(); // exclusions submenu follows the live app list
+          }
+        } else if (appTarget && chosenSource) {
+          const again = await windowProcessByTitle(chosenSource.name);
+          if (again && again.pid !== appTarget.pid) {
+            appTarget = again;
+            baseAudio = { id: `applicationLoopback:${again.pid}`, name: "App audio" };
+            win?.webContents.send("audio:rearm");
           }
         }
       })();
@@ -226,6 +294,45 @@ function main() {
     text: "Sharp text — code, docs",
   };
 
+  const discordMuted = () =>
+    DISCORD_APPS.every((a) => settings.excludedApps.includes(a));
+
+  const setAppExcluded = (name: string, excluded: boolean) => {
+    const setNames = DISCORD_APPS.includes(name) ? DISCORD_APPS : [name];
+    settings.excludedApps = settings.excludedApps.filter(
+      (a) => !setNames.includes(a),
+    );
+    if (excluded) settings.excludedApps.push(...setNames);
+    saveSettings();
+    if (live && mixerActive)
+      win?.webContents.send("audio:exclude-set", settings.excludedApps);
+    updateTray();
+  };
+
+  const exclusionItems = (): Electron.MenuItemConstructorOptions[] => {
+    const items: Electron.MenuItemConstructorOptions[] = [
+      {
+        label: "Mute Discord in stream",
+        type: "checkbox",
+        checked: discordMuted(),
+        click: (item) => setAppExcluded("discord", item.checked),
+      },
+    ];
+    const others = lastRoots.filter(
+      (r) => !DISCORD_APPS.includes(r.name) && r.name !== "explorer",
+    );
+    if (others.length) items.push({ type: "separator" });
+    for (const r of others) {
+      items.push({
+        label: `Mute ${r.name}`,
+        type: "checkbox",
+        checked: settings.excludedApps.includes(r.name),
+        click: (item) => setAppExcluded(r.name, item.checked),
+      });
+    }
+    return items;
+  };
+
   const settingsSubmenus = (): Electron.MenuItemConstructorOptions[] => [
     {
       label: "Video",
@@ -256,18 +363,7 @@ function main() {
     {
       label: "Audio exclusions",
       visible: process.platform === "win32",
-      submenu: [
-        {
-          label: "Mute Discord in stream (soon — needs native audio capture)",
-          type: "checkbox",
-          checked: false,
-          enabled: false,
-        },
-        {
-          label: "Tip: share the app's window to stream only its audio",
-          enabled: false,
-        },
-      ],
+      submenu: exclusionItems(),
     },
   ];
 
@@ -370,10 +466,14 @@ function main() {
     "picker:choose",
     async (_e, source: { id: string; name: string; isScreen: boolean }) => {
       chosenSource = source;
-      await arm();
-      return { perApp: appTarget != null, excludedDiscord: excludedPid != null };
+      return armForChoice();
     },
   );
+
+  ipcMain.handle("audio:arm", (_e, pid: number) => {
+    mixerArmPid = pid;
+    pokeActivation();
+  });
 
   ipcMain.handle("settings:get", () => settings);
 
@@ -381,16 +481,6 @@ function main() {
     const res = await fetch(`${SERVER_URL}/api/sessions`, { method: "POST" });
     if (!res.ok) throw new Error(`session create failed: HTTP ${res.status}`);
     return res.json();
-  });
-
-  ipcMain.handle("audio:exclusion-unsupported", async () => {
-    // S1 verdict from the field: the per-app device ids don't work here.
-    if (!perAppSupported) return false;
-    perAppSupported = false;
-    console.log("per-app audio device ids unsupported — falling back to loopback");
-    await arm();
-    updateTray();
-    return true; // caller should retry once
   });
 
   ipcMain.on("share:live", (_e, url: string) => {
@@ -415,7 +505,8 @@ function main() {
     shareUrl = "";
     chosenSource = null;
     appTarget = null;
-    excludedPid = null;
+    mixerActive = false;
+    mixerArmPid = null;
     stopPolling();
     updateTray();
     win?.close();
@@ -425,14 +516,25 @@ function main() {
 
   void app.whenReady().then(() => {
     session.defaultSession.setDisplayMediaRequestHandler((_request, callback) => {
-      if (chosenSource) {
+      if (!chosenSource) {
+        callback({} as Parameters<typeof callback>[0]); // ALWAYS answer (02)
+        return;
+      }
+      if (mixerArmPid != null) {
+        // A mixer capture: same video source (discarded by the renderer),
+        // audio locked to one app's process tree.
+        const pid = mixerArmPid;
+        mixerArmPid = null;
         callback({
           video: { id: chosenSource.id, name: chosenSource.name },
-          audio: armedAudio,
+          audio: { id: `applicationLoopback:${pid}`, name: "App audio" },
         } as unknown as Parameters<typeof callback>[0]);
-      } else {
-        callback({} as Parameters<typeof callback>[0]); // ALWAYS answer (02)
+        return;
       }
+      callback({
+        video: { id: chosenSource.id, name: chosenSource.name },
+        audio: baseAudio,
+      } as unknown as Parameters<typeof callback>[0]);
     });
 
     if (process.platform === "darwin") app.dock?.hide();

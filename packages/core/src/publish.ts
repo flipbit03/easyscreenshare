@@ -52,6 +52,9 @@ export interface StartOptions {
   audio: boolean;
   audioPreset: AudioPresetName;
   videoMode?: VideoModeName;
+  /** When set, this track is published as the stream audio and getDisplayMedia
+   * is asked for video only (used by the desktop app's per-app audio mixer). */
+  audioTrackOverride?: MediaStreamTrack;
   /** Test/CI hook: publish an animated 1080p60 canvas instead of capturing —
    * needs no permissions/picker, so automated e2e can run fully headless. */
   testSource?: "canvas";
@@ -118,14 +121,15 @@ export async function startScreenShare(opts: StartOptions): Promise<PublishHandl
     ? createCanvasTestStream()
     : await navigator.mediaDevices.getDisplayMedia({
     video: { frameRate: { ideal: 60 } },
-    audio: opts.audio ? SYSTEM_AUDIO_CONSTRAINTS : false,
+    audio: opts.audio && !opts.audioTrackOverride ? SYSTEM_AUDIO_CONSTRAINTS : false,
     // Non-standard-but-shipped options; TS lib doesn't know them all.
     systemAudio: "include",
     selfBrowserSurface: "exclude",
   } as DisplayMediaStreamOptions);
 
   const videoTrack = stream.getVideoTracks()[0];
-  const audioTrack = stream.getAudioTracks()[0] ?? null;
+  const audioTrack =
+    opts.audioTrackOverride ?? stream.getAudioTracks()[0] ?? null;
   let currentAudioTrack = audioTrack;
   const videoMode: VideoModeName = opts.videoMode ?? "motion";
   if ("contentHint" in videoTrack)
