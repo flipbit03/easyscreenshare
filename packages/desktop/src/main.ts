@@ -395,10 +395,10 @@ function main() {
     if (!tray) return;
     tray.setToolTip(
       live
-        ? `easyscreenshare — LIVE: ${viewerStats.count} ${
+        ? `easyscreenshare v${app.getVersion()} — LIVE: ${viewerStats.count} ${
             viewerStats.count === 1 ? "viewer" : "viewers"
           }`
-        : "easyscreenshare",
+        : `easyscreenshare v${app.getVersion()}`,
     );
     tray.setContextMenu(
       Menu.buildFromTemplate(
@@ -422,7 +422,7 @@ function main() {
                 label: "Open web app",
                 click: () => void shell.openExternal(SERVER_URL),
               },
-              { label: `easyscreenshare ${app.getVersion()}`, enabled: false },
+              { label: `easyscreenshare v${app.getVersion()}`, enabled: false },
               { label: "Quit", click: () => quit() },
             ],
       ),
