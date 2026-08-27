@@ -1,10 +1,12 @@
 // easyscreenshare desktop — tray-resident publisher shell.
-// 4.2/4.3: custom source picker + publish + clipboard link + tray LIVE state.
-//
-// Standing guards (docs/research/02, 03, 04): no safeStorage, no
-// setLoginItemSettings, no Squirrel.Mac while unsigned; clipboard lives in
-// main (renderers lost it in Electron 44); the picker/pipeline window keeps
-// backgroundThrottling off; ALWAYS answer the display-media callback.
+// 4.2/4.3 + audio routing: custom picker, publish, clipboard link, tray LIVE
+// state, quality submenus, and per-app audio routing:
+//   - screen share  → system audio MINUS exclusions (Discord filtered by
+//     default, re-armed live when Discord starts/stops mid-stream)
+//   - window share  → ONLY that app's audio (include-mode process loopback)
+// Both per-app paths ride Chromium's applicationLoopback/exclude device ids
+// through Electron's display-media escape hatch (research 04 §3 — the S1
+// spike shipping as a feature, with graceful fallback to plain loopback).
 import {
   app,
   BrowserWindow,
@@ -18,12 +20,24 @@ import {
   shell,
   Tray,
 } from "electron";
+import { execFile } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
 
 declare const PICKER_VITE_DEV_SERVER_URL: string | undefined;
 declare const PICKER_VITE_NAME: string;
 
 const SERVER_URL = process.env.ESS_SERVER ?? "https://easyscreenshare.flipbit03.com";
+const DISCORD_EXES = ["Discord.exe", "DiscordPTB.exe", "DiscordCanary.exe"];
+
+type AudioPresetName = "voice" | "balanced" | "music";
+type VideoModeName = "motion" | "text";
+
+interface Settings {
+  audioPreset: AudioPresetName;
+  videoMode: VideoModeName;
+  excludeDiscord: boolean;
+}
 
 app.setName("easyscreenshare");
 app.setAppUserModelId(
@@ -35,13 +49,172 @@ if (!gotLock) {
   console.log("easyscreenshare is already running — exiting this instance");
   app.quit();
 } else {
+  main();
+}
+
+function main() {
   let tray: Tray | null = null;
   let win: BrowserWindow | null = null;
   let live = false;
   let shareUrl = "";
-  // Source chosen in our picker; consumed by the display-media handler.
-  let chosenSource: { id: string; name: string } | null = null;
+  let chosenSource: { id: string; name: string; isScreen: boolean } | null = null;
+  /** Device the display-media handler answers with. Recomputed by arm(). */
+  let armedAudio: "loopback" | { id: string; name: string } | undefined;
+  /** Whether the per-app device ids work on this system (S1 verdict). */
+  let perAppSupported = true;
+  /** include-mode target for window shares: resolved process. */
+  let appTarget: { pid: number; exe: string } | null = null;
+  /** exclude-mode target while screen-sharing. */
+  let excludedPid: number | null = null;
+  let pollTimer: NodeJS.Timeout | null = null;
 
+  // ---------- settings ----------
+  const settingsPath = () => path.join(app.getPath("userData"), "settings.json");
+  const settings: Settings = (() => {
+    const defaults: Settings = {
+      audioPreset: "balanced",
+      videoMode: "motion",
+      excludeDiscord: true,
+    };
+    try {
+      return { ...defaults, ...JSON.parse(fs.readFileSync(settingsPath(), "utf8")) };
+    } catch {
+      return defaults;
+    }
+  })();
+  const saveSettings = () => {
+    try {
+      fs.mkdirSync(path.dirname(settingsPath()), { recursive: true });
+      fs.writeFileSync(settingsPath(), JSON.stringify(settings, null, 2));
+    } catch (e) {
+      console.error("settings save failed:", e);
+    }
+  };
+
+  // ---------- process helpers (Windows) ----------
+  const psJson = (cmd: string): Promise<unknown> =>
+    new Promise((resolve) => {
+      if (process.platform !== "win32") return resolve(null);
+      execFile(
+        "powershell.exe",
+        ["-NoProfile", "-NonInteractive", "-Command", cmd],
+        { timeout: 8000, windowsHide: true },
+        (err, stdout) => {
+          if (err || !stdout.trim()) return resolve(null);
+          try {
+            resolve(JSON.parse(stdout));
+          } catch {
+            resolve(null);
+          }
+        },
+      );
+    });
+
+  const asArray = (v: unknown): Record<string, unknown>[] =>
+    v == null ? [] : Array.isArray(v) ? (v as Record<string, unknown>[]) : [v as Record<string, unknown>];
+
+  /** Root of Discord's process tree (audio children live under it). */
+  const discordRootPid = async (): Promise<number | null> => {
+    const filter = DISCORD_EXES.map((e) => `Name='${e}'`).join(" OR ");
+    const rows = asArray(
+      await psJson(
+        `Get-CimInstance Win32_Process -Filter "${filter}" | Select-Object ProcessId,ParentProcessId | ConvertTo-Json`,
+      ),
+    );
+    if (!rows.length) return null;
+    const pids = new Set(rows.map((r) => Number(r.ProcessId)));
+    const root = rows.find((r) => !pids.has(Number(r.ParentProcessId)));
+    return root ? Number(root.ProcessId) : Number(rows[0].ProcessId);
+  };
+
+  /** Owning process of a shared window, resolved by its title. */
+  const windowProcessByTitle = async (
+    title: string,
+  ): Promise<{ pid: number; exe: string } | null> => {
+    const esc = title.replace(/'/g, "''");
+    const rows = asArray(
+      await psJson(
+        `Get-Process | Where-Object { $_.MainWindowTitle -eq '${esc}' } | Select-Object Id,ProcessName | ConvertTo-Json`,
+      ),
+    );
+    if (!rows.length) return null;
+    return { pid: Number(rows[0].Id), exe: String(rows[0].ProcessName) };
+  };
+
+  const pidAlive = async (pid: number): Promise<boolean> =>
+    asArray(
+      await psJson(`Get-Process -Id ${pid} -ErrorAction SilentlyContinue | Select-Object Id | ConvertTo-Json`),
+    ).length > 0;
+
+  // ---------- audio arming ----------
+  const arm = async () => {
+    if (process.platform === "linux") {
+      armedAudio = undefined; // whole-system only, tier 2 (research 04)
+      return;
+    }
+    if (!chosenSource) {
+      armedAudio = "loopback";
+      return;
+    }
+    if (!chosenSource.isScreen && perAppSupported && process.platform === "win32") {
+      // Window share → ONLY that app's audio.
+      appTarget = await windowProcessByTitle(chosenSource.name);
+      if (appTarget) {
+        armedAudio = {
+          id: `applicationLoopback:${appTarget.pid}`,
+          name: "App audio",
+        };
+        return;
+      }
+    }
+    appTarget = null;
+    // Screen share (or window pid unresolved) → system minus exclusions.
+    if (settings.excludeDiscord && perAppSupported && process.platform === "win32") {
+      excludedPid = await discordRootPid();
+      if (excludedPid != null) {
+        armedAudio = {
+          id: `restrictOwnAudioBrowserLoopback:${excludedPid}`,
+          name: "System audio",
+        };
+        return;
+      }
+    }
+    excludedPid = null;
+    armedAudio = "loopback";
+  };
+
+  const rearmLive = async () => {
+    await arm();
+    win?.webContents.send("audio:rearm");
+  };
+
+  const startPolling = () => {
+    stopPolling();
+    if (process.platform !== "win32") return;
+    pollTimer = setInterval(() => {
+      void (async () => {
+        if (!live || !chosenSource) return;
+        if (appTarget) {
+          // include-mode: follow the app across restarts
+          if (!(await pidAlive(appTarget.pid))) {
+            const again = await windowProcessByTitle(chosenSource.name);
+            const byExe = again ?? null; // title may have changed; best effort
+            if (byExe && byExe.pid !== appTarget.pid) await rearmLive();
+          }
+        } else if (settings.excludeDiscord && perAppSupported) {
+          // exclude-mode: Discord may start/stop/restart mid-stream
+          const now = await discordRootPid();
+          if (now !== excludedPid) await rearmLive();
+        }
+      })();
+    }, 5000);
+  };
+  const stopPolling = () => {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = null;
+  };
+
+  // ---------- tray ----------
   const assetsDir = () =>
     app.isPackaged
       ? path.join(process.resourcesPath, "assets")
@@ -55,6 +228,64 @@ if (!gotLock) {
       ),
     );
 
+  const AUDIO_LABELS: Record<AudioPresetName, string> = {
+    voice: "Voice — talking",
+    balanced: "Balanced",
+    music: "Music — high quality",
+  };
+  const VIDEO_LABELS: Record<VideoModeName, string> = {
+    motion: "Smooth motion — games, video",
+    text: "Sharp text — code, docs",
+  };
+
+  const settingsSubmenus = (): Electron.MenuItemConstructorOptions[] => [
+    {
+      label: "Video",
+      submenu: (Object.keys(VIDEO_LABELS) as VideoModeName[]).map((key) => ({
+        label: VIDEO_LABELS[key],
+        type: "radio" as const,
+        checked: settings.videoMode === key,
+        click: () => {
+          settings.videoMode = key;
+          saveSettings();
+          if (live) win?.webContents.send("settings:video", key);
+        },
+      })),
+    },
+    {
+      label: "Audio quality",
+      submenu: (Object.keys(AUDIO_LABELS) as AudioPresetName[]).map((key) => ({
+        label: AUDIO_LABELS[key],
+        type: "radio" as const,
+        checked: settings.audioPreset === key,
+        click: () => {
+          settings.audioPreset = key;
+          saveSettings();
+          if (live) win?.webContents.send("settings:audio", key);
+        },
+      })),
+    },
+    {
+      label: "Audio exclusions",
+      visible: process.platform === "win32",
+      submenu: [
+        {
+          label: perAppSupported
+            ? "Mute Discord in stream"
+            : "Mute Discord (unsupported on this system)",
+          type: "checkbox",
+          checked: settings.excludeDiscord,
+          enabled: perAppSupported,
+          click: (item) => {
+            settings.excludeDiscord = item.checked;
+            saveSettings();
+            if (live && chosenSource?.isScreen) void rearmLive();
+          },
+        },
+      ],
+    },
+  ];
+
   const updateTray = () => {
     if (!tray) return;
     tray.setToolTip(live ? "easyscreenshare — LIVE" : "easyscreenshare");
@@ -63,23 +294,22 @@ if (!gotLock) {
         live
           ? [
               { label: "● LIVE", enabled: false },
-              {
-                label: "Copy link",
-                click: () => {
-                  clipboard.writeText(shareUrl);
-                },
-              },
+              { label: "Copy link", click: () => clipboard.writeText(shareUrl) },
               { label: "Stop sharing", click: () => requestStop() },
+              { type: "separator" },
+              ...settingsSubmenus(),
               { type: "separator" },
               { label: "Quit", click: () => quit() },
             ]
           : [
               { label: "Share my screen…", click: () => openPicker() },
+              { type: "separator" },
+              ...settingsSubmenus(),
+              { type: "separator" },
               {
                 label: "Open web app",
                 click: () => void shell.openExternal(SERVER_URL),
               },
-              { type: "separator" },
               { label: `easyscreenshare ${app.getVersion()}`, enabled: false },
               { label: "Quit", click: () => quit() },
             ],
@@ -93,7 +323,6 @@ if (!gotLock) {
 
   const quit = () => {
     if (live) requestStop();
-    // Give the renderer a beat to disconnect cleanly, then exit.
     setTimeout(() => app.exit(0), 400);
   };
 
@@ -112,16 +341,14 @@ if (!gotLock) {
       title: "easyscreenshare",
       webPreferences: {
         preload: path.join(__dirname, "preload.js"),
-        // The publish pipeline lives here; never throttle it (research 04).
-        backgroundThrottling: false,
+        backgroundThrottling: false, // publish pipeline lives here (research 04)
       },
     });
     win.once("ready-to-show", () => win?.show());
     win.on("close", (e) => {
       if (live) {
-        // Closing the window must not kill the stream — hide instead.
         e.preventDefault();
-        win?.hide();
+        win?.hide(); // closing must not kill the stream
       }
     });
     win.on("closed", () => {
@@ -136,7 +363,7 @@ if (!gotLock) {
     }
   };
 
-  // ---------- IPC surface ----------
+  // ---------- IPC ----------
   ipcMain.handle("picker:list", async () => {
     const sources = await desktopCapturer.getSources({
       types: ["screen", "window"],
@@ -154,9 +381,16 @@ if (!gotLock) {
       }));
   });
 
-  ipcMain.on("picker:choose", (_e, source: { id: string; name: string }) => {
-    chosenSource = source;
-  });
+  ipcMain.handle(
+    "picker:choose",
+    async (_e, source: { id: string; name: string; isScreen: boolean }) => {
+      chosenSource = source;
+      await arm();
+      return { perApp: appTarget != null, excludedDiscord: excludedPid != null };
+    },
+  );
+
+  ipcMain.handle("settings:get", () => settings);
 
   ipcMain.handle("session:create", async () => {
     const res = await fetch(`${SERVER_URL}/api/sessions`, { method: "POST" });
@@ -164,11 +398,22 @@ if (!gotLock) {
     return res.json();
   });
 
+  ipcMain.handle("audio:exclusion-unsupported", async () => {
+    // S1 verdict from the field: the per-app device ids don't work here.
+    if (!perAppSupported) return false;
+    perAppSupported = false;
+    console.log("per-app audio device ids unsupported — falling back to loopback");
+    await arm();
+    updateTray();
+    return true; // caller should retry once
+  });
+
   ipcMain.on("share:live", (_e, url: string) => {
     live = true;
     shareUrl = url;
     clipboard.writeText(url);
     updateTray();
+    startPolling();
     win?.hide();
     try {
       new Notification({
@@ -176,7 +421,7 @@ if (!gotLock) {
         body: "Link copied — paste it to your friends",
       }).show();
     } catch {
-      /* toast support varies for portable apps; tray state is the truth */
+      /* toast support varies for portable apps */
     }
   });
 
@@ -184,6 +429,9 @@ if (!gotLock) {
     live = false;
     shareUrl = "";
     chosenSource = null;
+    appTarget = null;
+    excludedPid = null;
+    stopPolling();
     updateTray();
     win?.close();
   });
@@ -191,22 +439,16 @@ if (!gotLock) {
   app.on("second-instance", () => openPicker());
 
   void app.whenReady().then(() => {
-    // Our picker already chose the source; resolve capture requests directly.
-    session.defaultSession.setDisplayMediaRequestHandler(
-      (_request, callback) => {
-        if (chosenSource) {
-          // audio 'loopback': system audio; the renderer's restrictOwnAudio
-          // constraint upgrades it to loopbackWithoutChrome (Electron 43.4+).
-          callback({
-            video: chosenSource,
-            audio: process.platform === "linux" ? undefined : "loopback",
-          } as Parameters<typeof callback>[0]);
-        } else {
-          // ALWAYS answer the callback (research 02) — deny when unarmed.
-          callback({} as Parameters<typeof callback>[0]);
-        }
-      },
-    );
+    session.defaultSession.setDisplayMediaRequestHandler((_request, callback) => {
+      if (chosenSource) {
+        callback({
+          video: { id: chosenSource.id, name: chosenSource.name },
+          audio: armedAudio,
+        } as unknown as Parameters<typeof callback>[0]);
+      } else {
+        callback({} as Parameters<typeof callback>[0]); // ALWAYS answer (02)
+      }
+    });
 
     if (process.platform === "darwin") app.dock?.hide();
     try {
@@ -216,7 +458,7 @@ if (!gotLock) {
     } catch (e) {
       console.error("tray unavailable:", e);
       console.log("easyscreenshare desktop ready — NO tray host");
-      openPicker(); // no tray = the window is the only entry point
+      openPicker();
     }
   });
 

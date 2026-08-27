@@ -7,6 +7,7 @@ export type { ViewerTokenResponse } from "./generated/ViewerTokenResponse";
 export { createSession, fetchViewerToken } from "./api";
 export {
   AUDIO_PRESETS,
+  SYSTEM_AUDIO_CONSTRAINTS,
   VIDEO_MODES,
   browserSupportsSystemAudio,
   startScreenShare,

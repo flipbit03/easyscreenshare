@@ -117,3 +117,7 @@ body {
 .retry:hover {
   background: var(--panel-2);
 }
+.substatus {
+  font-size: 0.9rem;
+  color: #66718a;
+}

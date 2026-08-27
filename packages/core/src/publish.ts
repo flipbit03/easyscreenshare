@@ -34,6 +34,18 @@ export const VIDEO_MODES: Record<VideoModeName, { label: string; hint: string }>
   text: { label: "Sharp text", hint: "code, docs — favors resolution" },
 };
 
+/** APM-off system-audio constraints (research 04): voice processing OFF or
+ * music gets mangled; stereo; own-app audio excluded. Shared between initial
+ * capture and re-captures. */
+export const SYSTEM_AUDIO_CONSTRAINTS: MediaTrackConstraints = {
+  echoCancellation: false,
+  noiseSuppression: false,
+  autoGainControl: false,
+  channelCount: 2,
+  sampleRate: 48000,
+  restrictOwnAudio: true,
+} as MediaTrackConstraints;
+
 export interface StartOptions {
   livekitUrl: string;
   token: string;
@@ -91,6 +103,9 @@ export interface PublishHandle {
   hasAudio: boolean;
   setAudioPreset(name: AudioPresetName): Promise<void>;
   setVideoMode(name: VideoModeName): Promise<void>;
+  /** Swap the live audio track without renegotiation (viewers hear a blip
+   * at most). Used to re-arm capture when audio exclusions change. */
+  replaceAudioTrack(track: MediaStreamTrack): Promise<void>;
   /** Fired when capture ends outside our UI (browser's own "stop sharing"). */
   onEnded(cb: () => void): void;
   stop(): Promise<void>;
@@ -103,16 +118,7 @@ export async function startScreenShare(opts: StartOptions): Promise<PublishHandl
     ? createCanvasTestStream()
     : await navigator.mediaDevices.getDisplayMedia({
     video: { frameRate: { ideal: 60 } },
-    audio: opts.audio
-      ? ({
-          echoCancellation: false,
-          noiseSuppression: false,
-          autoGainControl: false,
-          channelCount: 2,
-          sampleRate: 48000,
-          restrictOwnAudio: true,
-        } as MediaTrackConstraints)
-      : false,
+    audio: opts.audio ? SYSTEM_AUDIO_CONSTRAINTS : false,
     // Non-standard-but-shipped options; TS lib doesn't know them all.
     systemAudio: "include",
     selfBrowserSurface: "exclude",
@@ -120,6 +126,7 @@ export async function startScreenShare(opts: StartOptions): Promise<PublishHandl
 
   const videoTrack = stream.getVideoTracks()[0];
   const audioTrack = stream.getAudioTracks()[0] ?? null;
+  let currentAudioTrack = audioTrack;
   const videoMode: VideoModeName = opts.videoMode ?? "motion";
   if ("contentHint" in videoTrack)
     videoTrack.contentHint = videoMode === "text" ? "detail" : "motion";
@@ -178,6 +185,18 @@ export async function startScreenShare(opts: StartOptions): Promise<PublishHandl
       }));
       await sender.setParameters(params);
     },
+    async replaceAudioTrack(track) {
+      const lt = audioPub?.track as unknown as
+        | { replaceTrack?: (t: MediaStreamTrack) => Promise<void> }
+        | undefined;
+      if (!lt?.replaceTrack) {
+        track.stop();
+        return;
+      }
+      await lt.replaceTrack(track);
+      currentAudioTrack?.stop();
+      currentAudioTrack = track;
+    },
     async setVideoMode(name) {
       if ("contentHint" in videoTrack)
         videoTrack.contentHint = name === "text" ? "detail" : "motion";
@@ -191,7 +210,7 @@ export async function startScreenShare(opts: StartOptions): Promise<PublishHandl
     },
     async stop() {
       videoTrack.stop();
-      audioTrack?.stop();
+      currentAudioTrack?.stop();
       await room.disconnect();
     },
   };
