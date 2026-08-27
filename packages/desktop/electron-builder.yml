@@ -1,0 +1,13 @@
+# Wraps the Forge-packaged win32 output into ONE portable .exe (no installer).
+# Used with --prepackaged, so Forge remains the packager; this only makes the
+# single-file artifact. signAndEditExecutable=false keeps the build wine-free
+# on Linux/WSL (stock Electron icon/metadata until CI builds on Windows).
+appId: com.flipbit03.easyscreenshare
+productName: easyscreenshare
+directories:
+  output: out/portable
+win:
+  target: portable
+  signAndEditExecutable: false
+portable:
+  artifactName: easyscreenshare-${version}-portable.exe

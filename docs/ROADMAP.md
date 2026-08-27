@@ -104,7 +104,7 @@
 - [ ] **4.5 Linux (X11 + Wayland-portal) and macOS best-effort builds**
   - **Accept:** X11: custom picker + loopback audio (per S3 verdict); Wayland: portal picker path works; macOS: runs ad-hoc-signed, `NSAudioCaptureUsageDescription` present, RMS self-test surfaces missing-permission as a real error.
   - **Guards:** macOS Info.plist key ships from the FIRST build (silent-dead-stream, 04); tray: no right-click on Linux — all actions in left-click menu.
-- [ ] **4.6 Packaged artifacts** — portable zip + installer per platform, SHA256 checksums, README install docs incl. unsigned-app bypass instructions (macOS 15 path, 03).
+- [ ] **4.6 Packaged artifacts** — Windows: ONE portable .exe (no installer; `make:win` via forge package + electron-builder portable, already working from WSL); Linux: AppImage/zip; macOS: zip (ad-hoc signed). SHA256 checksums; README install docs incl. unsigned-app bypass (03). Ship as GitHub Release attachments once minimally stable.
   - **Accept:** a friend installs from the artifact alone (no dev tooling) and shares successfully.
 
 ## Phase 5 — M3: Audio excellence
