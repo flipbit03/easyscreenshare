@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::{
     extract::{Path, State},
@@ -7,26 +7,47 @@ use axum::{
 };
 use livekit_api::access_token::{AccessToken, VideoGrants};
 use rand::distr::{Alphanumeric, SampleString};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::config::Config;
+use crate::{config::Config, AppState, SessionEntry};
 
-/// 12 alphanumeric chars ≈ 71 bits of entropy — unguessable share links.
+/// Random ids are 12 alphanumeric chars ≈ 71 bits.
 pub const SESSION_ID_LEN: usize = 12;
-/// Publishers hold one token for the whole stream.
+const SESSION_SECRET_LEN: usize = 24;
+/// A session is considered live for this long after its last heartbeat.
+const SESSION_TTL: Duration = Duration::from_secs(20);
 const PUBLISHER_TOKEN_TTL: Duration = Duration::from_secs(12 * 60 * 60);
-/// Viewer tokens are throwaway; the page re-mints on rejoin.
 const VIEWER_TOKEN_TTL: Duration = Duration::from_secs(10 * 60);
+/// Vanity-name rules: keeps names link-clean and away from control chars.
+const NAME_MIN: usize = 3;
+const NAME_MAX: usize = 32;
+
+#[derive(Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../core/src/generated/")]
+pub struct CreateSessionRequest {
+    /// Optional vanity id (e.g. "cadu" → /s/cadu). First-come, first-served
+    /// while live; omitted → a random id.
+    pub name: Option<String>,
+}
 
 #[derive(Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../core/src/generated/")]
 pub struct CreateSessionResponse {
     pub session_id: String,
+    pub session_secret: String,
     pub share_url: String,
     pub publisher_token: String,
     pub livekit_url: String,
+}
+
+#[derive(Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../core/src/generated/")]
+pub struct HeartbeatRequest {
+    pub secret: String,
 }
 
 #[derive(Serialize, TS)]
@@ -41,8 +62,13 @@ fn rand_string(len: usize) -> String {
     Alphanumeric.sample_string(&mut rand::rng(), len)
 }
 
-/// The server is stateless: the LiveKit room (auto-created on first join,
-/// named by the session id) is the only session state that exists.
+fn valid_name(name: &str) -> bool {
+    (NAME_MIN..=NAME_MAX).contains(&name.chars().count())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
 fn mint_token(
     cfg: &Config,
     room: &str,
@@ -59,8 +85,6 @@ fn mint_token(
             can_publish,
             can_subscribe: !can_publish,
             can_publish_data: false,
-            // Viewers report their ICE path (direct/relay) to the publisher
-            // via participant attributes.
             can_update_own_metadata: !can_publish,
             ..Default::default()
         })
@@ -72,29 +96,91 @@ fn mint_token(
 }
 
 pub async fn create_session(
-    State(cfg): State<Config>,
-) -> Result<Json<CreateSessionResponse>, StatusCode> {
-    let id = rand_string(SESSION_ID_LEN);
-    let publisher_token = mint_token(&cfg, &id, "publisher", true, PUBLISHER_TOKEN_TTL)?;
+    State(state): State<AppState>,
+    body: Option<Json<CreateSessionRequest>>,
+) -> Result<Json<CreateSessionResponse>, (StatusCode, String)> {
+    let requested = body.and_then(|b| b.0.name);
+    let id = match requested {
+        Some(name) => {
+            let name = name.trim().to_owned();
+            if !valid_name(&name) {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "name must be 3–32 chars: letters, digits, - or _".into(),
+                ));
+            }
+            name
+        }
+        None => rand_string(SESSION_ID_LEN),
+    };
+
+    let secret = rand_string(SESSION_SECRET_LEN);
+    // Atomic claim: check-and-insert under the lock so two simultaneous
+    // requests for the same name can't both win.
+    {
+        let mut sessions = state.sessions.lock().unwrap();
+        if let Some(existing) = sessions.get(&id) {
+            if existing.last_seen.elapsed() < SESSION_TTL {
+                return Err((
+                    StatusCode::CONFLICT,
+                    format!("\"{id}\" is in use right now — pick another name"),
+                ));
+            }
+        }
+        sessions.insert(
+            id.clone(),
+            SessionEntry {
+                last_seen: Instant::now(),
+                secret: secret.clone(),
+            },
+        );
+    }
+
+    let publisher_token = mint_token(&state.cfg, &id, "publisher", true, PUBLISHER_TOKEN_TTL)
+        .map_err(|s| (s, "token error".into()))?;
     Ok(Json(CreateSessionResponse {
-        share_url: format!("{}/s/{}", cfg.public_base_url, id),
+        share_url: format!("{}/s/{}", state.cfg.public_base_url, id),
         session_id: id,
+        session_secret: secret,
         publisher_token,
-        livekit_url: cfg.livekit_public_url.clone(),
+        livekit_url: state.cfg.livekit_public_url.clone(),
     }))
 }
 
+pub async fn heartbeat(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<HeartbeatRequest>,
+) -> StatusCode {
+    let mut sessions = state.sessions.lock().unwrap();
+    match sessions.get_mut(&id) {
+        Some(entry) if entry.secret == body.secret => {
+            entry.last_seen = Instant::now();
+            StatusCode::NO_CONTENT
+        }
+        // Wrong/absent secret: don't leak whether the id exists.
+        _ => StatusCode::FORBIDDEN,
+    }
+}
+
 pub async fn viewer_token(
-    State(cfg): State<Config>,
+    State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<ViewerTokenResponse>, StatusCode> {
-    if id.len() != SESSION_ID_LEN || !id.chars().all(|c| c.is_ascii_alphanumeric()) {
-        return Err(StatusCode::NOT_FOUND);
+    // Authoritative liveness: a viewer can only join a session that a
+    // publisher is currently heartbeating. Unknown/expired → 404, so dead
+    // links error instead of waiting forever.
+    {
+        let sessions = state.sessions.lock().unwrap();
+        match sessions.get(&id) {
+            Some(entry) if entry.last_seen.elapsed() < SESSION_TTL => {}
+            _ => return Err(StatusCode::NOT_FOUND),
+        }
     }
     let identity = format!("viewer-{}", rand_string(8));
-    let token = mint_token(&cfg, &id, &identity, false, VIEWER_TOKEN_TTL)?;
+    let token = mint_token(&state.cfg, &id, &identity, false, VIEWER_TOKEN_TTL)?;
     Ok(Json(ViewerTokenResponse {
         token,
-        livekit_url: cfg.livekit_public_url.clone(),
+        livekit_url: state.cfg.livekit_public_url.clone(),
     }))
 }

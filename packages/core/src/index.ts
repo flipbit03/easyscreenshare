@@ -4,7 +4,13 @@
 export type { CreateSessionResponse } from "./generated/CreateSessionResponse";
 export type { ViewerTokenResponse } from "./generated/ViewerTokenResponse";
 
-export { createSession, fetchViewerToken } from "./api";
+export {
+  createSession,
+  fetchViewerToken,
+  startHeartbeat,
+  NameTakenError,
+  StreamNotFoundError,
+} from "./api";
 export {
   AUDIO_PRESETS,
   SYSTEM_AUDIO_CONSTRAINTS,

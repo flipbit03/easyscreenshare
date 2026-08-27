@@ -7,10 +7,10 @@ import {
   Track,
   VideoQuality,
 } from "livekit-client";
-import { fetchViewerToken } from "@easyscreenshare/core";
+import { StreamNotFoundError, fetchViewerToken } from "@easyscreenshare/core";
 import { IconExpand, IconShrink, IconVolume, IconVolumeOff } from "./Icons";
 
-type Phase = "connecting" | "waiting" | "live" | "ended" | "error";
+type Phase = "connecting" | "waiting" | "live" | "ended" | "notfound" | "error";
 type QualityChoice = "auto" | "high" | "medium" | "low";
 
 const QUALITY_MAP: Record<Exclude<QualityChoice, "auto">, VideoQuality> = {
@@ -109,8 +109,12 @@ export default function Viewer({ sessionId }: { sessionId: string }) {
         await room.connect(livekitUrl, token);
         if (!publisherPresent()) setPhase("waiting");
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
-        setPhase("error");
+        if (e instanceof StreamNotFoundError) {
+          setPhase("notfound");
+        } else {
+          setError(e instanceof Error ? e.message : String(e));
+          setPhase("error");
+        }
       }
     })();
 
@@ -185,6 +189,14 @@ export default function Viewer({ sessionId }: { sessionId: string }) {
             {phase === "connecting" && <p>connecting…</p>}
             {phase === "waiting" && <p>waiting for the stream to start…</p>}
             {phase === "ended" && <p>stream ended</p>}
+            {phase === "notfound" && (
+              <>
+                <p>This stream doesn't exist or has ended.</p>
+                <a className="home-link" href="/">
+                  Share your own screen →
+                </a>
+              </>
+            )}
             {phase === "error" && <p className="err">couldn't join: {error}</p>}
           </div>
         )}

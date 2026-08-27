@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { RoomEvent } from "livekit-client";
 import {
   AUDIO_PRESETS,
+  NameTakenError,
   VIDEO_MODES,
   browserSupportsSystemAudio,
   createSession,
@@ -29,6 +30,8 @@ export default function Publisher() {
   const [videoMode, setVideoMode] = useState<VideoModeName>("motion");
   const [gotAudio, setGotAudio] = useState(true);
   const [viewers, setViewers] = useState<ViewerStats>({ count: 0, conns: [] });
+  const [name, setName] = useState("");
+  const [nameTaken, setNameTaken] = useState(false);
 
   const audioCapable = browserSupportsSystemAudio();
 
@@ -63,8 +66,9 @@ export default function Publisher() {
   const start = async () => {
     setPhase("starting");
     setError("");
+    setNameTaken(false);
     try {
-      const session = await createSession();
+      const session = await createSession(name.trim() || undefined);
       const testSource =
         new URLSearchParams(location.search).get("testsource") === "canvas"
           ? ("canvas" as const)
@@ -77,6 +81,10 @@ export default function Publisher() {
         audio: audioCapable,
         audioPreset: preset,
         videoMode,
+        heartbeat: {
+          sessionId: session.sessionId,
+          secret: session.sessionSecret,
+        },
         testSource,
       });
       handleRef.current = handle;
@@ -91,6 +99,11 @@ export default function Publisher() {
       }
       setPhase("live");
     } catch (e) {
+      if (e instanceof NameTakenError) {
+        setNameTaken(true);
+        setPhase("idle");
+        return;
+      }
       const msg = e instanceof Error ? e.message : String(e);
       if (/NotAllowed|Permission/i.test(msg)) {
         setPhase("idle"); // user cancelled the picker — not an error
@@ -98,6 +111,19 @@ export default function Publisher() {
         setError(msg);
         setPhase("error");
       }
+    }
+  };
+
+  /** Re-pick the shared surface without dropping the stream or link. */
+  const changeSource = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: { frameRate: { ideal: 60 } },
+      } as DisplayMediaStreamOptions);
+      const track = stream.getVideoTracks()[0];
+      if (track) await handleRef.current?.replaceVideoTrack(track);
+    } catch {
+      // user cancelled the picker — keep sharing the current surface
     }
   };
 
@@ -145,6 +171,30 @@ export default function Publisher() {
             Hit share, send the link — friends watch live in any browser.
             No installs, no accounts, quality up to native resolution.
           </p>
+
+          <div className="name-row">
+            <label className="name-field">
+              <span className="name-prefix">/s/</span>
+              <input
+                type="text"
+                inputMode="text"
+                autoComplete="off"
+                spellCheck={false}
+                placeholder="custom name (optional)"
+                value={name}
+                maxLength={32}
+                onChange={(e) => {
+                  setName(e.target.value.replace(/[^A-Za-z0-9_-]/g, ""));
+                  setNameTaken(false);
+                }}
+              />
+            </label>
+          </div>
+          {nameTaken && (
+            <p className="note warn">
+              “{name}” is in use right now — pick another name.
+            </p>
+          )}
 
           <button
             className="cta"
@@ -269,9 +319,14 @@ export default function Publisher() {
             </div>
           )}
 
-          <button className="stop-btn" onClick={stop}>
-            Stop sharing
-          </button>
+          <div className="live-actions">
+            <button className="ghost-btn" onClick={changeSource}>
+              Change what you're sharing
+            </button>
+            <button className="stop-btn" onClick={stop}>
+              Stop sharing
+            </button>
+          </div>
         </main>
       )}
 

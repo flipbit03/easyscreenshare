@@ -16,6 +16,8 @@ import {
   type LocalTrackPublication,
 } from "livekit-client";
 
+import { startHeartbeat } from "./api";
+
 export type AudioPresetName = "voice" | "balanced" | "music";
 
 export const AUDIO_PRESETS: Record<
@@ -55,6 +57,8 @@ export interface StartOptions {
   /** When set, this track is published as the stream audio and getDisplayMedia
    * is asked for video only (used by the desktop app's per-app audio mixer). */
   audioTrackOverride?: MediaStreamTrack;
+  /** Keep the session marked live server-side for its whole duration. */
+  heartbeat?: { sessionId: string; secret: string; baseUrl?: string };
   /** Test/CI hook: publish an animated 1080p60 canvas instead of capturing —
    * needs no permissions/picker, so automated e2e can run fully headless. */
   testSource?: "canvas";
@@ -109,6 +113,9 @@ export interface PublishHandle {
   /** Swap the live audio track without renegotiation (viewers hear a blip
    * at most). Used to re-arm capture when audio exclusions change. */
   replaceAudioTrack(track: MediaStreamTrack): Promise<void>;
+  /** Swap the live VIDEO track — lets the sharer change the shared source
+   * (screen ↔ window) without dropping the stream or changing the link. */
+  replaceVideoTrack(track: MediaStreamTrack): Promise<void>;
   /** Fired when capture ends outside our UI (browser's own "stop sharing"). */
   onEnded(cb: () => void): void;
   stop(): Promise<void>;
@@ -125,6 +132,7 @@ export async function startScreenShare(opts: StartOptions): Promise<PublishHandl
     // Non-standard-but-shipped options; TS lib doesn't know them all.
     systemAudio: "include",
     selfBrowserSurface: "exclude",
+    surfaceSwitching: "include", // native "share a different window" control
   } as DisplayMediaStreamOptions);
 
   const videoTrack = stream.getVideoTracks()[0];
@@ -169,10 +177,21 @@ export async function startScreenShare(opts: StartOptions): Promise<PublishHandl
     });
   }
 
+  const stopHeartbeat = opts.heartbeat
+    ? startHeartbeat(
+        opts.heartbeat.sessionId,
+        opts.heartbeat.secret,
+        opts.heartbeat.baseUrl,
+      )
+    : () => {};
+
+  let currentVideoTrack = videoTrack;
   const endedCallbacks: Array<() => void> = [];
-  videoTrack.addEventListener("ended", () => {
-    for (const cb of endedCallbacks) cb();
-  });
+  const wireEnded = (t: MediaStreamTrack) =>
+    t.addEventListener("ended", () => {
+      for (const cb of endedCallbacks) cb();
+    });
+  wireEnded(videoTrack);
 
   return {
     room,
@@ -201,6 +220,21 @@ export async function startScreenShare(opts: StartOptions): Promise<PublishHandl
       currentAudioTrack?.stop();
       currentAudioTrack = track;
     },
+    async replaceVideoTrack(track) {
+      const lt = videoPub.track as unknown as
+        | { replaceTrack?: (t: MediaStreamTrack) => Promise<void> }
+        | undefined;
+      if (!lt?.replaceTrack) {
+        track.stop();
+        return;
+      }
+      if ("contentHint" in track)
+        track.contentHint = videoMode === "text" ? "detail" : "motion";
+      await lt.replaceTrack(track);
+      currentVideoTrack.stop();
+      currentVideoTrack = track;
+      wireEnded(track); // browser "stop sharing" on the NEW surface still ends us
+    },
     async setVideoMode(name) {
       if ("contentHint" in videoTrack)
         videoTrack.contentHint = name === "text" ? "detail" : "motion";
@@ -213,7 +247,8 @@ export async function startScreenShare(opts: StartOptions): Promise<PublishHandl
       endedCallbacks.push(cb);
     },
     async stop() {
-      videoTrack.stop();
+      stopHeartbeat();
+      currentVideoTrack.stop();
       currentAudioTrack?.stop();
       await room.disconnect();
     },

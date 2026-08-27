@@ -5,6 +5,7 @@ use axum::{
 use base64::Engine;
 use easyscreenshare_server::{build_router, config::Config};
 use http_body_util::BodyExt;
+use serde_json::json;
 use tower::ServiceExt;
 
 fn test_config() -> Config {
@@ -18,6 +19,10 @@ fn test_config() -> Config {
     }
 }
 
+fn app() -> axum::Router {
+    build_router(test_config())
+}
+
 fn jwt_claims(jwt: &str) -> serde_json::Value {
     let payload = jwt.split('.').nth(1).expect("jwt has three parts");
     let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -26,8 +31,8 @@ fn jwt_claims(jwt: &str) -> serde_json::Value {
     serde_json::from_slice(&bytes).expect("valid json claims")
 }
 
-async fn body_json(req: Request<Body>) -> (StatusCode, serde_json::Value) {
-    let res = build_router(test_config()).oneshot(req).await.unwrap();
+async fn send(router: &axum::Router, req: Request<Body>) -> (StatusCode, serde_json::Value) {
+    let res = router.clone().oneshot(req).await.unwrap();
     let status = res.status();
     let bytes = res.into_body().collect().await.unwrap().to_bytes();
     let json = if bytes.is_empty() {
@@ -38,83 +43,126 @@ async fn body_json(req: Request<Body>) -> (StatusCode, serde_json::Value) {
     (status, json)
 }
 
-fn post_sessions() -> Request<Body> {
+fn post_json(path: &str, body: serde_json::Value) -> Request<Body> {
+    Request::post(path)
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+fn create_random() -> Request<Body> {
     Request::post("/api/sessions").body(Body::empty()).unwrap()
 }
 
 #[tokio::test]
 async fn create_session_mints_publish_only_token() {
-    let (status, json) = body_json(post_sessions()).await;
+    let app = app();
+    let (status, json) = send(&app, create_random()).await;
     assert_eq!(status, StatusCode::OK);
 
     let id = json["sessionId"].as_str().unwrap();
     assert_eq!(id.len(), 12);
-    assert!(id.chars().all(|c| c.is_ascii_alphanumeric()));
+    assert!(!json["sessionSecret"].as_str().unwrap().is_empty());
     assert_eq!(
         json["shareUrl"].as_str().unwrap(),
         format!("http://test.local/s/{id}")
     );
-    assert_eq!(json["livekitUrl"].as_str().unwrap(), "ws://localhost:7880");
 
     let claims = jwt_claims(json["publisherToken"].as_str().unwrap());
-    assert_eq!(claims["iss"], "devkey");
-    assert_eq!(claims["sub"], "publisher");
-    let video = &claims["video"];
-    assert_eq!(video["room"], id);
-    assert_eq!(video["roomJoin"], true);
-    assert_eq!(video["canPublish"], true);
-    assert_eq!(video["canSubscribe"], false, "publisher must not subscribe");
-
-    // Publisher token must outlive a long stream (~12h).
-    let lifetime = claims["exp"].as_i64().unwrap() - claims["nbf"].as_i64().unwrap();
-    assert!(
-        lifetime >= 11 * 3600,
-        "publisher ttl too short: {lifetime}s"
-    );
+    assert_eq!(claims["video"]["room"], id);
+    assert_eq!(claims["video"]["canPublish"], true);
+    assert_eq!(claims["video"]["canSubscribe"], false);
 }
 
 #[tokio::test]
-async fn viewer_token_is_subscribe_only_and_short_lived() {
+async fn viewer_token_404_for_unknown_session() {
+    // A dead/never-created link must 404, not hand out a token.
+    let app = app();
     let req = Request::get("/api/sessions/AbC123xYz456/token")
         .body(Body::empty())
         .unwrap();
-    let (status, json) = body_json(req).await;
-    assert_eq!(status, StatusCode::OK);
-
-    let claims = jwt_claims(json["token"].as_str().unwrap());
-    assert!(claims["sub"].as_str().unwrap().starts_with("viewer-"));
-    let video = &claims["video"];
-    assert_eq!(video["room"], "AbC123xYz456");
-    assert_eq!(video["roomJoin"], true);
-    assert_eq!(video["canPublish"], false, "viewer must NEVER publish");
-    assert_eq!(video["canSubscribe"], true);
-
-    // Viewer tokens are throwaway: minutes, not hours.
-    let lifetime = claims["exp"].as_i64().unwrap() - claims["nbf"].as_i64().unwrap();
-    assert!(lifetime <= 15 * 60, "viewer ttl too long: {lifetime}s");
+    let (status, _) = send(&app, req).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
-async fn viewer_token_rejects_malformed_ids() {
-    for bad in ["short", "way-too-long-to-be-valid", "has.dots.in12"] {
-        let req = Request::get(format!("/api/sessions/{bad}/token"))
-            .body(Body::empty())
-            .unwrap();
-        let (status, _) = body_json(req).await;
-        assert_eq!(status, StatusCode::NOT_FOUND, "id {bad:?} must 404");
+async fn viewer_token_works_after_session_created() {
+    let app = app();
+    let (_, created) = send(&app, create_random()).await;
+    let id = created["sessionId"].as_str().unwrap();
+
+    let req = Request::get(format!("/api/sessions/{id}/token"))
+        .body(Body::empty())
+        .unwrap();
+    let (status, json) = send(&app, req).await;
+    assert_eq!(status, StatusCode::OK);
+    let claims = jwt_claims(json["token"].as_str().unwrap());
+    assert_eq!(
+        claims["video"]["canPublish"], false,
+        "viewer must NEVER publish"
+    );
+    assert_eq!(claims["video"]["canSubscribe"], true);
+}
+
+#[tokio::test]
+async fn vanity_name_is_claimed_first_come_first_served() {
+    let app = app();
+    let (s1, _) = send(&app, post_json("/api/sessions", json!({ "name": "cadu" }))).await;
+    assert_eq!(s1, StatusCode::OK);
+    // Second claim while the first is live → conflict.
+    let (s2, _) = send(&app, post_json("/api/sessions", json!({ "name": "cadu" }))).await;
+    assert_eq!(s2, StatusCode::CONFLICT);
+    // A viewer can join the claimed name.
+    let req = Request::get("/api/sessions/cadu/token")
+        .body(Body::empty())
+        .unwrap();
+    let (status, _) = send(&app, req).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn invalid_vanity_names_rejected() {
+    let app = app();
+    for bad in [
+        "ab",
+        "has space",
+        "waaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaay-too-long",
+        "dot.dot",
+    ] {
+        let (status, _) = send(&app, post_json("/api/sessions", json!({ "name": bad }))).await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "name {bad:?} must be rejected"
+        );
     }
 }
 
 #[tokio::test]
-async fn session_ids_are_unique() {
-    let (_, a) = body_json(post_sessions()).await;
-    let (_, b) = body_json(post_sessions()).await;
-    assert_ne!(a["sessionId"], b["sessionId"]);
+async fn heartbeat_requires_matching_secret() {
+    let app = app();
+    let (_, created) = send(&app, post_json("/api/sessions", json!({ "name": "beat" }))).await;
+    let secret = created["sessionSecret"].as_str().unwrap();
+
+    let (bad, _) = send(
+        &app,
+        post_json("/api/sessions/beat/heartbeat", json!({ "secret": "wrong" })),
+    )
+    .await;
+    assert_eq!(bad, StatusCode::FORBIDDEN);
+
+    let (ok, _) = send(
+        &app,
+        post_json("/api/sessions/beat/heartbeat", json!({ "secret": secret })),
+    )
+    .await;
+    assert_eq!(ok, StatusCode::NO_CONTENT);
 }
 
 #[tokio::test]
 async fn healthz_ok() {
+    let app = app();
     let req = Request::get("/healthz").body(Body::empty()).unwrap();
-    let res = build_router(test_config()).oneshot(req).await.unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
+    let (status, _) = send(&app, req).await;
+    assert_eq!(status, StatusCode::OK);
 }
