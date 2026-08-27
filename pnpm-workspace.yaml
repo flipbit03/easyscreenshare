@@ -1,7 +1,12 @@
 packages:
   - packages/*
-allowBuilds:
-  electron-winstaller: set this to true or false
+# Explicit build-script allowlist. Naming it here settles pnpm's
+# ERR_PNPM_IGNORED_BUILDS: only these run postinstall; everything else
+# (electron-winstaller etc. — not needed for the portable build) is
+# silently skipped instead of failing --frozen-lockfile in CI.
+onlyBuiltDependencies:
+  - electron
+  - esbuild
 overrides:
   "@electron/node-gyp": "10.2.0-electron.2"
 # Electron Forge needs physical (non-symlinked) electron packages; hoist only
