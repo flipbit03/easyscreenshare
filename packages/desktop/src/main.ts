@@ -330,9 +330,12 @@ function main() {
     "data:text/html;charset=utf-8," +
     encodeURIComponent(
       "<style>html,body{margin:0;background:transparent;overflow:hidden}" +
-        "div{position:fixed;inset:0;border:2px solid #ff3b30;" +
+        // 2px while pulsing (visibility), settling to a 1px hairline when the
+        // animation ends and the keyframe width stops applying.
+        "div{position:fixed;inset:0;border:1px solid #ff3b30;" +
         "animation:p 1.1s ease-in-out 3}" +
-        "@keyframes p{50%{opacity:.15}}</style><div></div>",
+        "@keyframes p{0%,100%{border-width:2px}50%{opacity:.15;border-width:2px}}" +
+        "</style><div></div>",
     );
 
   /** (Re)creates the frame; recreating on source switch sidesteps DPI-move
