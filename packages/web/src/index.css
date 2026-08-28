@@ -288,20 +288,26 @@ input[type="range"]:disabled {
   border-radius: var(--radius);
   background: var(--panel);
   overflow: hidden;
+  max-width: 100%;
 }
 .sharebox code {
   flex: 1;
+  min-width: 0;
   padding: 0.9rem 1rem;
   font-size: 0.98rem;
-  overflow-x: auto;
+  /* Never scroll — ellipsize. The copy buttons are the interaction. */
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
   align-self: center;
 }
 .copy-btn {
   display: inline-flex;
   align-items: center;
+  flex-shrink: 0;
   gap: 0.45rem;
   padding: 0 1.1rem;
+  white-space: nowrap;
   background: var(--panel-2);
   border-left: 1px solid var(--line);
   font-weight: 600;

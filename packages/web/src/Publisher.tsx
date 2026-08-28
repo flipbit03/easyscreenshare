@@ -356,7 +356,7 @@ export default function Publisher() {
           </div>
 
           <div className="sharebox">
-            <code>{shareUrl}</code>
+            <code title={shareUrl}>{shareUrl.replace(/^https?:\/\//, "")}</code>
             <button className="copy-btn" onClick={() => void copyText("link")}>
               {copied === "link" ? <IconCheck /> : <IconCopy />}
               Link
