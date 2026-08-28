@@ -270,7 +270,9 @@ export default function Viewer({ sessionId }: { sessionId: string }) {
                     if (e.key === "Enter") submitGate();
                   }}
                 />
-                {gateError && <p className="err">{gateError}</p>}
+                <p className="gate-error" aria-live="polite">
+                  {gateError || " "}
+                </p>
                 <button
                   className="gate-join"
                   onClick={submitGate}

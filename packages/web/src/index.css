@@ -694,3 +694,10 @@ input[type="range"]:disabled {
   background: var(--accent-dim);
   cursor: default;
 }
+.gate-error {
+  /* Always occupies its line so appearing/disappearing never shifts layout. */
+  min-height: 1.3em;
+  color: #ff9c9c;
+  font-size: 0.92rem;
+  margin: 0;
+}
