@@ -7,37 +7,53 @@ import {
   browserSupportsSystemAudio,
   checkName,
   createSession,
+  kickViewer,
   startScreenShare,
   type AudioPresetName,
   type PublishHandle,
   type VideoModeName,
 } from "@easyscreenshare/core";
-
-type NameStatus = "idle" | "checking" | "available" | "taken" | "invalid";
-const NAME_KEY = "ess:name";
 import { IconCheck, IconCopy, IconEye, IconScreen } from "./Icons";
 
 type Phase = "idle" | "starting" | "live" | "error";
+type NameStatus = "idle" | "checking" | "available" | "taken" | "invalid";
+const NAME_KEY = "ess:name";
+const PUBLIC_KEY = "ess:public";
 
-interface ViewerStats {
-  count: number;
-  conns: Array<[string, number]>; // connection type -> count, e.g. ["direct · udp", 3]
+interface ViewerRow {
+  identity: string;
+  name: string;
+  conn: string;
+  joinedAt: number;
+}
+
+function ago(ts: number): string {
+  const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  if (s < 60) return "just now";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  return `${Math.floor(m / 60)}h${m % 60 ? ` ${m % 60}m` : ""} ago`;
 }
 
 export default function Publisher() {
   const handleRef = useRef<PublishHandle | null>(null);
+  const sessionRef = useRef<{ id: string; secret: string } | null>(null);
+  const joinedAtRef = useRef<Map<string, number>>(new Map());
   const [phase, setPhase] = useState<Phase>("idle");
   const [error, setError] = useState("");
   const [shareUrl, setShareUrl] = useState("");
-  const [copied, setCopied] = useState(false);
+  const [pin, setPin] = useState<string | null>(null);
+  const [copied, setCopied] = useState<"" | "link" | "both">("");
+  const [notice, setNotice] = useState("");
   const [preset, setPreset] = useState<AudioPresetName>("balanced");
   const [videoMode, setVideoMode] = useState<VideoModeName>("motion");
   const [gotAudio, setGotAudio] = useState(true);
-  const [viewers, setViewers] = useState<ViewerStats>({ count: 0, conns: [] });
-  const [name, setName] = useState(
-    () => localStorage.getItem(NAME_KEY) ?? "",
-  );
+  const [viewers, setViewers] = useState<ViewerRow[]>([]);
+  const [name, setName] = useState(() => localStorage.getItem(NAME_KEY) ?? "");
   const [nameStatus, setNameStatus] = useState<NameStatus>("idle");
+  const [isPublic, setIsPublic] = useState(
+    () => localStorage.getItem(PUBLIC_KEY) === "1",
+  );
 
   const audioCapable = browserSupportsSystemAudio();
 
@@ -59,26 +75,42 @@ export default function Publisher() {
   }, [name]);
 
   useEffect(() => {
+    localStorage.setItem(PUBLIC_KEY, isPublic ? "1" : "0");
+  }, [isPublic]);
+
+  // Viewers list: names come from tokens, conn self-reported via attributes.
+  useEffect(() => {
     if (phase !== "live") return;
     const room = handleRef.current?.room;
     if (!room) return;
     const refresh = () => {
-      const groups = new Map<string, number>();
-      let count = 0;
+      const rows: ViewerRow[] = [];
       for (const p of room.remoteParticipants.values()) {
         if (!p.identity.startsWith("viewer-")) continue;
-        count++;
-        const key = p.attributes?.conn ?? "connecting…";
-        groups.set(key, (groups.get(key) ?? 0) + 1);
+        if (!joinedAtRef.current.has(p.identity)) {
+          joinedAtRef.current.set(
+            p.identity,
+            p.joinedAt ? p.joinedAt.getTime() : Date.now(),
+          );
+        }
+        rows.push({
+          identity: p.identity,
+          name: p.name || "Someone",
+          conn: p.attributes?.conn ?? "connecting…",
+          joinedAt: joinedAtRef.current.get(p.identity)!,
+        });
       }
-      setViewers({ count, conns: [...groups.entries()] });
+      rows.sort((a, b) => a.joinedAt - b.joinedAt);
+      setViewers(rows);
     };
     refresh();
+    const tick = setInterval(refresh, 30_000); // keep "ago" labels fresh
     room
       .on(RoomEvent.ParticipantConnected, refresh)
       .on(RoomEvent.ParticipantDisconnected, refresh)
       .on(RoomEvent.ParticipantAttributesChanged, refresh);
     return () => {
+      clearInterval(tick);
       room
         .off(RoomEvent.ParticipantConnected, refresh)
         .off(RoomEvent.ParticipantDisconnected, refresh)
@@ -86,11 +118,22 @@ export default function Publisher() {
     };
   }, [phase]);
 
+  const copyText = async (kind: "link" | "both") => {
+    const text =
+      kind === "both" && pin ? `${shareUrl} · PIN: ${pin}` : shareUrl;
+    await navigator.clipboard.writeText(text);
+    setCopied(kind);
+  };
+
   const start = async () => {
     setPhase("starting");
     setError("");
+    setNotice("");
     try {
-      const session = await createSession(name.trim() || undefined);
+      const session = await createSession({
+        name: name.trim() || undefined,
+        public: isPublic,
+      });
       const testSource =
         new URLSearchParams(location.search).get("testsource") === "canvas"
           ? ("canvas" as const)
@@ -110,14 +153,20 @@ export default function Publisher() {
         testSource,
       });
       handleRef.current = handle;
+      sessionRef.current = { id: session.sessionId, secret: session.sessionSecret };
+      joinedAtRef.current.clear();
       handle.onEnded(() => void stop());
       setGotAudio(handle.hasAudio);
       setShareUrl(session.shareUrl);
+      setPin(session.pin);
       try {
-        await navigator.clipboard.writeText(session.shareUrl);
-        setCopied(true);
+        const text = session.pin
+          ? `${session.shareUrl} · PIN: ${session.pin}`
+          : session.shareUrl;
+        await navigator.clipboard.writeText(text);
+        setCopied(session.pin ? "both" : "link");
       } catch {
-        setCopied(false); // clipboard needs a secure context; show the link anyway
+        setCopied(""); // clipboard needs a secure context; show the link anyway
       }
       setPhase("live");
     } catch (e) {
@@ -149,17 +198,33 @@ export default function Publisher() {
     }
   };
 
+  const kick = async (v: ViewerRow) => {
+    const s = sessionRef.current;
+    if (!s) return;
+    try {
+      const r = await kickViewer(s.id, s.secret, v.identity);
+      if (r.pin) {
+        setPin(r.pin);
+        setCopied("");
+        setNotice(`Kicked ${v.name} — new PIN: ${r.pin}`);
+      } else {
+        setNotice(`Kicked ${v.name}`);
+      }
+    } catch (e) {
+      setNotice(`Kick failed: ${e instanceof Error ? e.message : e}`);
+    }
+  };
+
   const stop = async () => {
     await handleRef.current?.stop();
     handleRef.current = null;
+    sessionRef.current = null;
     setPhase("idle");
     setShareUrl("");
-    setCopied(false);
-  };
-
-  const copy = async () => {
-    await navigator.clipboard.writeText(shareUrl);
-    setCopied(true);
+    setPin(null);
+    setCopied("");
+    setNotice("");
+    setViewers([]);
   };
 
   const changePreset = (p: AudioPresetName) => {
@@ -221,6 +286,15 @@ export default function Publisher() {
             </label>
           </div>
 
+          <label className="public-row">
+            <input
+              type="checkbox"
+              checked={isPublic}
+              onChange={(e) => setIsPublic(e.target.checked)}
+            />
+            Public stream — anyone with the link can watch (no PIN)
+          </label>
+
           <button
             className="cta"
             onClick={start}
@@ -244,7 +318,8 @@ export default function Publisher() {
               “also share system audio” in the dialog.
             </li>
             <li>
-              <b>The link lands in your clipboard.</b> Paste it anywhere.
+              <b>The link lands in your clipboard.</b> Closed streams get a
+              4-digit PIN — say it on your call.
             </li>
             <li>
               <b>They're watching.</b> Any browser, no install, adaptive
@@ -261,9 +336,11 @@ export default function Publisher() {
               <span className="live-dot" aria-hidden="true" />
               LIVE
             </span>
-            <span className="live-hint">
-              {copied ? "Link copied — paste it to your friends" : "Send this link to your friends"}
-            </span>
+            {pin && (
+              <span className="pin-chip" title="Say this on your call — viewers need it">
+                PIN: <b>{pin}</b>
+              </span>
+            )}
             {gotAudio && (
               <span className="audio-chip">
                 <span className="audio-chip-dot" aria-hidden="true" />
@@ -274,11 +351,19 @@ export default function Publisher() {
 
           <div className="sharebox">
             <code>{shareUrl}</code>
-            <button className="copy-btn" onClick={copy}>
-              {copied ? <IconCheck /> : <IconCopy />}
-              {copied ? "Copied" : "Copy"}
+            <button className="copy-btn" onClick={() => void copyText("link")}>
+              {copied === "link" ? <IconCheck /> : <IconCopy />}
+              Link
             </button>
+            {pin && (
+              <button className="copy-btn" onClick={() => void copyText("both")}>
+                {copied === "both" ? <IconCheck /> : <IconCopy />}
+                Link + PIN
+              </button>
+            )}
           </div>
+
+          {notice && <p className="note warn">{notice}</p>}
 
           {!gotAudio && audioCapable && (
             <p className="note warn">
@@ -290,21 +375,27 @@ export default function Publisher() {
 
           <div className="viewers-line">
             <IconEye />
-            {viewers.count === 0 ? (
+            {viewers.length === 0 ? (
               <span>no one watching yet</span>
             ) : (
-              <>
-                <span>
-                  {viewers.count} watching
-                </span>
-                {viewers.conns.map(([type, n]) => (
-                  <span key={type} className="conn-chip">
-                    {n}× {type}
-                  </span>
-                ))}
-              </>
+              <span>{viewers.length} watching</span>
             )}
           </div>
+          {viewers.length > 0 && (
+            <ul className="viewer-list">
+              {viewers.map((v) => (
+                <li key={v.identity} className="viewer-row">
+                  <span className="viewer-name">{v.name}</span>
+                  <span className="viewer-meta">
+                    joined {ago(v.joinedAt)} · {v.conn}
+                  </span>
+                  <button className="kick-btn" onClick={() => void kick(v)}>
+                    Kick + New PIN
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
 
           <div className="preset-row">
             <span className="preset-label">Video</span>

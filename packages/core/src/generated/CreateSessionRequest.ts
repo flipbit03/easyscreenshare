@@ -5,4 +5,8 @@ export type CreateSessionRequest = {
  * Optional vanity id (e.g. "cadu" → /s/cadu). First-come, first-served
  * while live; omitted → a random id.
  */
-name: string | null, };
+name: string | null, 
+/**
+ * Public streams need no PIN. Default: closed (PIN required).
+ */
+public: boolean, };

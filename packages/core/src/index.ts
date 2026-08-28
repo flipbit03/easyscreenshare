@@ -7,11 +7,18 @@ export type { ViewerTokenResponse } from "./generated/ViewerTokenResponse";
 export {
   createSession,
   fetchViewerToken,
+  kickViewer,
   checkName,
   startHeartbeat,
   NameTakenError,
   StreamNotFoundError,
+  PinRequiredError,
+  WrongPinError,
+  TooManyAttemptsError,
+  type CreateSessionOptions,
+  type ViewerJoinOptions,
   type NameAvailability,
+  type KickResponse,
 } from "./api";
 export {
   AUDIO_PRESETS,

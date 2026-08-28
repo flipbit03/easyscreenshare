@@ -35,12 +35,21 @@ const api = {
     audioPreset: "voice" | "balanced" | "music";
     videoMode: "motion" | "text";
     excludedApps: string[];
+    publicStream: boolean;
+    notifyJoins: boolean;
   }> => ipcRenderer.invoke("settings:get"),
-  notifyLive: (shareUrl: string) => ipcRenderer.send("share:live", shareUrl),
+  notifyLive: (info: { shareUrl: string; pin: string | null }) =>
+    ipcRenderer.send("share:live", info),
   notifyStopped: () => ipcRenderer.send("share:stopped"),
   hidePicker: () => ipcRenderer.send("picker:hide"),
-  updateViewers: (stats: { count: number; groups: [string, number][] }) =>
-    ipcRenderer.send("viewers:update", stats),
+  updateViewers: (
+    rows: { identity: string; name: string; conn: string; joinedAt: number }[],
+  ) => ipcRenderer.send("viewers:update", rows),
+  notifyPinRotated: (info: { pin: string | null; kickedName: string }) =>
+    ipcRenderer.send("pin:rotated", info),
+  onKickViewer: (cb: (identity: string) => void) => {
+    ipcRenderer.on("viewer:kick", (_e, identity) => cb(identity));
+  },
   onStopRequested: (cb: () => void) => {
     ipcRenderer.on("share:stop", cb);
   },

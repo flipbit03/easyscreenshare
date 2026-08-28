@@ -577,3 +577,120 @@ input[type="range"]:disabled {
   color: var(--accent);
   font-weight: 600;
 }
+
+/* public toggle */
+.public-row {
+  margin-top: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--text-2);
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+.public-row input {
+  accent-color: var(--accent);
+  width: 1.05rem;
+  height: 1.05rem;
+  cursor: pointer;
+}
+
+/* PIN chip on the live panel */
+.pin-chip {
+  padding: 0.3rem 0.75rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text-2);
+  font-size: 0.9rem;
+}
+.pin-chip b {
+  color: var(--text);
+  font-family: var(--font-display);
+  letter-spacing: 0.12em;
+}
+
+/* viewers list */
+.viewer-list {
+  margin: 0.4rem 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.4rem;
+  max-width: 34rem;
+}
+.viewer-row {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.45rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+.viewer-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 12rem;
+}
+.viewer-meta {
+  color: var(--text-2);
+  font-size: 0.85rem;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.kick-btn {
+  padding: 0.3rem 0.7rem;
+  border-radius: 8px;
+  border: 1px solid #582424;
+  color: #ff9c9c;
+  font-size: 0.82rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.kick-btn:hover {
+  background: rgba(255, 92, 56, 0.08);
+}
+
+/* viewer PIN gate */
+.gate {
+  display: grid;
+  gap: 0.7rem;
+  justify-items: center;
+}
+.gate-input {
+  font: inherit;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 0.55rem 0.8rem;
+  width: 16rem;
+  text-align: center;
+}
+.gate-input:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.gate-pin {
+  font-family: var(--font-display);
+  font-size: 1.3rem;
+  letter-spacing: 0.5em;
+  width: 9rem;
+}
+.gate-join {
+  font: inherit;
+  padding: 0.6rem 1.6rem;
+  border-radius: var(--radius);
+  background: var(--accent);
+  color: #160904;
+  font-weight: 650;
+}
+.gate-join:disabled {
+  background: var(--accent-dim);
+  cursor: default;
+}

@@ -7,6 +7,8 @@ pub struct Config {
     pub livekit_api_secret: String,
     /// URL the CLIENTS use to reach LiveKit signaling (ws:// or wss://).
     pub livekit_public_url: String,
+    /// URL THIS SERVER uses to reach LiveKit's HTTP API (RoomService).
+    pub livekit_internal_url: String,
     /// Base URL share links are minted under (no trailing slash).
     pub public_base_url: String,
     pub static_dir: PathBuf,
@@ -32,6 +34,8 @@ impl Config {
             livekit_api_secret,
             livekit_public_url: std::env::var("LIVEKIT_PUBLIC_URL")
                 .unwrap_or_else(|_| "ws://localhost:7880".into()),
+            livekit_internal_url: std::env::var("LIVEKIT_INTERNAL_URL")
+                .unwrap_or_else(|_| "http://localhost:7880".into()),
             public_base_url: std::env::var("PUBLIC_BASE_URL")
                 .unwrap_or_else(|_| "http://localhost:8090".into()),
             static_dir: std::env::var("STATIC_DIR")

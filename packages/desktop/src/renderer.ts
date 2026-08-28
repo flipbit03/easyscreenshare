@@ -5,6 +5,7 @@ import {
   SYSTEM_AUDIO_CONSTRAINTS,
   checkName,
   createSession,
+  kickViewer,
   startScreenShare,
   type PublishHandle,
 } from "@easyscreenshare/core";
@@ -23,6 +24,7 @@ const app = document.getElementById("app")!;
 let handle: PublishHandle | null = null;
 let mixer: AppAudioMixer | null = null;
 let vanityName = localStorage.getItem(NAME_KEY) ?? "";
+let session: { id: string; secret: string } | null = null;
 let serverUrl = "";
 void window.ess.serverUrl().then((u) => (serverUrl = u));
 
@@ -187,7 +189,11 @@ async function startShare(source: SourceInfo) {
     if (armed.mixer) renderStatus("Starting…", false, "capturing app audio…");
     const audio = await buildAudio(source, armed);
 
-    const sess = await createSession(vanityName.trim() || undefined, serverUrl);
+    const sess = await createSession(
+      { name: vanityName.trim() || undefined, public: settings.publicStream },
+      serverUrl,
+    );
+    session = { id: sess.sessionId, secret: sess.sessionSecret };
     handle = await startScreenShare({
       livekitUrl: sess.livekitUrl,
       token: sess.publisherToken,
@@ -203,7 +209,7 @@ async function startShare(source: SourceInfo) {
     });
     handle.onEnded(() => void stopShare());
     watchViewers(handle);
-    window.ess.notifyLive(sess.shareUrl);
+    window.ess.notifyLive({ shareUrl: sess.shareUrl, pin: sess.pin });
     renderStatus("You're live — this window can stay hidden.", false, audio.sub);
   } catch (e) {
     mixer?.stop();
@@ -248,24 +254,55 @@ async function switchSource(source: SourceInfo) {
   }
 }
 
-/** Report viewer count + connection-type breakdown to main for the tray. */
+/** Report the viewer roster (name, conn, joined time) to main for the tray. */
+const joinedAt = new Map<string, number>();
 function watchViewers(hd: PublishHandle) {
   const push = () => {
-    const groups = new Map<string, number>();
-    let count = 0;
+    const rows: {
+      identity: string;
+      name: string;
+      conn: string;
+      joinedAt: number;
+    }[] = [];
     for (const p of hd.room.remoteParticipants.values()) {
       if (!p.identity.startsWith("viewer-")) continue;
-      count++;
-      const key = p.attributes?.conn ?? "connecting…";
-      groups.set(key, (groups.get(key) ?? 0) + 1);
+      if (!joinedAt.has(p.identity)) {
+        joinedAt.set(
+          p.identity,
+          p.joinedAt ? p.joinedAt.getTime() : Date.now(),
+        );
+      }
+      rows.push({
+        identity: p.identity,
+        name: p.name || "Someone",
+        conn: p.attributes?.conn ?? "connecting…",
+        joinedAt: joinedAt.get(p.identity)!,
+      });
     }
-    window.ess.updateViewers({ count, groups: [...groups.entries()] });
+    rows.sort((a, b) => a.joinedAt - b.joinedAt);
+    window.ess.updateViewers(rows);
   };
+  joinedAt.clear();
   hd.room
     .on(RoomEvent.ParticipantConnected, push)
     .on(RoomEvent.ParticipantDisconnected, push)
     .on(RoomEvent.ParticipantAttributesChanged, push);
   push();
+}
+
+/** Tray-initiated kick: rotate PIN + drop the connection, report back. */
+async function kickByIdentity(identity: string) {
+  if (!session) return;
+  const name =
+    [...(handle?.room.remoteParticipants.values() ?? [])].find(
+      (p) => p.identity === identity,
+    )?.name || "viewer";
+  try {
+    const r = await kickViewer(session.id, session.secret, identity, serverUrl);
+    window.ess.notifyPinRotated({ pin: r.pin, kickedName: name });
+  } catch (e) {
+    console.error("kick failed", e);
+  }
 }
 
 /** Single-capture rearm (window shares: the app restarted). */
@@ -290,10 +327,12 @@ async function stopShare() {
   if (hd) await hd.stop().catch(() => {});
   mixer?.stop();
   mixer = null;
+  session = null;
   window.ess.notifyStopped();
 }
 
 window.ess.onStopRequested(() => void stopShare());
+window.ess.onKickViewer((identity) => void kickByIdentity(identity));
 window.ess.onSwitchSource(() => void renderPicker("switch"));
 window.ess.onAudioRearm(() => void rearmAudio());
 window.ess.onMixerSync((diff) => void mixer?.sync(diff));

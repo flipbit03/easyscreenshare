@@ -40,6 +40,10 @@ interface Settings {
   audioPreset: AudioPresetName;
   videoMode: VideoModeName;
   excludedApps: string[];
+  /** Public streams need no PIN. Default: closed. */
+  publicStream: boolean;
+  /** Balloon when a viewer joins. */
+  notifyJoins: boolean;
 }
 
 export interface AudioRoot {
@@ -76,10 +80,33 @@ function main() {
   let pollTimer: NodeJS.Timeout | null = null;
   /** include-mode target for window shares. */
   let appTarget: { pid: number; exe: string } | null = null;
-  /** Viewer telemetry pushed from the renderer (reads LiveKit attributes). */
-  let viewerStats: { count: number; groups: [string, number][] } = {
-    count: 0,
-    groups: [],
+  /** Viewer roster pushed from the renderer (names from tokens). */
+  interface ViewerRow {
+    identity: string;
+    name: string;
+    conn: string;
+    joinedAt: number;
+  }
+  let viewerRows: ViewerRow[] = [];
+  let currentPin: string | null = null;
+
+  const ago = (ts: number): string => {
+    const m = Math.floor(Math.max(0, Date.now() - ts) / 60000);
+    if (m < 1) return "just now";
+    if (m < 60) return `${m}m ago`;
+    return `${Math.floor(m / 60)}h${m % 60 ? ` ${m % 60}m` : ""} ago`;
+  };
+
+  const balloon = (title: string, content: string) => {
+    try {
+      if (process.platform === "win32" && tray) {
+        tray.displayBalloon({ title, content, iconType: "info" });
+      } else {
+        new Notification({ title, body: content }).show();
+      }
+    } catch {
+      /* tray state is the fallback truth */
+    }
   };
 
   // ---------- settings ----------
@@ -89,6 +116,8 @@ function main() {
       audioPreset: "balanced",
       videoMode: "motion",
       excludedApps: [...DISCORD_APPS],
+      publicStream: false,
+      notifyJoins: true,
     };
     try {
       const loaded = JSON.parse(fs.readFileSync(settingsPath(), "utf8"));
@@ -370,24 +399,63 @@ function main() {
       visible: process.platform === "win32",
       submenu: exclusionItems(),
     },
+    {
+      label: "Access",
+      submenu: [
+        {
+          label: "Public stream (no PIN)",
+          type: "checkbox",
+          checked: settings.publicStream,
+          enabled: !live, // applies to the NEXT stream
+          click: (item) => {
+            settings.publicStream = item.checked;
+            saveSettings();
+          },
+        },
+        {
+          label: "Notify when someone joins",
+          type: "checkbox",
+          checked: settings.notifyJoins,
+          click: (item) => {
+            settings.notifyJoins = item.checked;
+            saveSettings();
+          },
+        },
+      ],
+    },
   ];
 
-  /** Header lines: "● LIVE" then one disabled line per connection type,
-   * e.g. "3 viewers (direct · udp)". */
+  /** Header: "● LIVE" + PIN + per-connection-type counts, then the roster
+   * submenu with per-viewer Kick + New PIN. */
   const viewerHeader = (): Electron.MenuItemConstructorOptions[] => {
     const lines: Electron.MenuItemConstructorOptions[] = [
       { label: "● LIVE", enabled: false },
     ];
-    if (viewerStats.count === 0) {
+    if (currentPin) lines.push({ label: `PIN: ${currentPin}`, enabled: false });
+    if (viewerRows.length === 0) {
       lines.push({ label: "no viewers yet", enabled: false });
-    } else {
-      for (const [conn, n] of viewerStats.groups) {
-        lines.push({
-          label: `${n} ${n === 1 ? "viewer" : "viewers"} (${conn})`,
-          enabled: false,
-        });
-      }
+      return lines;
     }
+    const groups = new Map<string, number>();
+    for (const v of viewerRows) groups.set(v.conn, (groups.get(v.conn) ?? 0) + 1);
+    for (const [conn, n] of groups) {
+      lines.push({
+        label: `${n} ${n === 1 ? "viewer" : "viewers"} (${conn})`,
+        enabled: false,
+      });
+    }
+    lines.push({
+      label: `Viewers (${viewerRows.length})`,
+      submenu: viewerRows.map((v) => ({
+        label: `${v.name} · joined ${ago(v.joinedAt)} · ${v.conn}`,
+        submenu: [
+          {
+            label: "Kick + New PIN",
+            click: () => win?.webContents.send("viewer:kick", v.identity),
+          },
+        ],
+      })),
+    });
     return lines;
   };
 
@@ -395,8 +463,8 @@ function main() {
     if (!tray) return;
     tray.setToolTip(
       live
-        ? `easyscreenshare v${app.getVersion()} — LIVE: ${viewerStats.count} ${
-            viewerStats.count === 1 ? "viewer" : "viewers"
+        ? `easyscreenshare v${app.getVersion()} — LIVE: ${viewerRows.length} ${
+            viewerRows.length === 1 ? "viewer" : "viewers"
           }`
         : `easyscreenshare v${app.getVersion()}`,
     );
@@ -407,6 +475,12 @@ function main() {
               ...viewerHeader(),
               { type: "separator" },
               { label: "Copy link", click: () => clipboard.writeText(shareUrl) },
+              {
+                label: "Copy link + PIN",
+                visible: currentPin != null,
+                click: () =>
+                  clipboard.writeText(`${shareUrl} · PIN: ${currentPin}`),
+              },
               {
                 label: "Change what you're sharing…",
                 click: () => {
@@ -513,11 +587,28 @@ function main() {
     pokeActivation();
   });
 
+  ipcMain.on("viewers:update", (_e, rows: ViewerRow[]) => {
+    const known = new Set(viewerRows.map((v) => v.identity));
+    if (live && settings.notifyJoins) {
+      for (const v of rows) {
+        if (!known.has(v.identity)) {
+          balloon(`${v.name} is watching`, `${rows.length} viewer${rows.length === 1 ? "" : "s"} now`);
+        }
+      }
+    }
+    viewerRows = rows;
+    if (live) updateTray();
+  });
+
   ipcMain.on(
-    "viewers:update",
-    (_e, stats: { count: number; groups: [string, number][] }) => {
-      viewerStats = stats;
-      if (live) updateTray();
+    "pin:rotated",
+    (_e, info: { pin: string | null; kickedName: string }) => {
+      currentPin = info.pin;
+      updateTray();
+      balloon(
+        `Kicked ${info.kickedName}`,
+        info.pin ? `New PIN: ${info.pin}` : "Viewer removed",
+      );
     },
   );
 
@@ -527,31 +618,36 @@ function main() {
 
   ipcMain.on("picker:hide", () => win?.hide());
 
-  ipcMain.on("share:live", (_e, url: string) => {
-    live = true;
-    shareUrl = url;
-    clipboard.writeText(url);
-    updateTray();
-    startPolling();
-    win?.hide();
-    try {
-      new Notification({
-        title: "You're live",
-        body: "Link copied — paste it to your friends",
-      }).show();
-    } catch {
-      /* toast support varies for portable apps */
-    }
-  });
+  ipcMain.on(
+    "share:live",
+    (_e, info: { shareUrl: string; pin: string | null }) => {
+      live = true;
+      shareUrl = info.shareUrl;
+      currentPin = info.pin;
+      clipboard.writeText(
+        info.pin ? `${info.shareUrl} · PIN: ${info.pin}` : info.shareUrl,
+      );
+      updateTray();
+      startPolling();
+      win?.hide();
+      balloon(
+        "You're live",
+        info.pin
+          ? `Link + PIN copied — PIN: ${info.pin}`
+          : "Link copied — paste it to your friends",
+      );
+    },
+  );
 
   ipcMain.on("share:stopped", () => {
     live = false;
     shareUrl = "";
+    currentPin = null;
+    viewerRows = [];
     chosenSource = null;
     appTarget = null;
     mixerActive = false;
     mixerArmPid = null;
-    viewerStats = { count: 0, groups: [] };
     stopPolling();
     updateTray();
     win?.close();

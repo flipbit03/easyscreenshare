@@ -19,6 +19,10 @@ pub struct SessionEntry {
     /// Secret returned to the publisher at creation; required to heartbeat,
     /// so a stale beat can't resurrect a name someone else has since claimed.
     pub secret: String,
+    /// 4-digit access PIN; None = public stream. Rotated on every kick.
+    pub pin: Option<String>,
+    /// Wrong-PIN rate limiting: client key -> (attempts, window start).
+    pub pin_attempts: HashMap<String, (u32, Instant)>,
 }
 
 pub type Sessions = Mutex<HashMap<String, SessionEntry>>;
@@ -50,7 +54,8 @@ pub fn build_router(cfg: config::Config) -> Router {
         .route("/api/sessions", post(api::create_session))
         .route("/api/names/{name}", get(api::check_name))
         .route("/api/sessions/{id}/heartbeat", post(api::heartbeat))
-        .route("/api/sessions/{id}/token", get(api::viewer_token))
+        .route("/api/sessions/{id}/token", post(api::viewer_token))
+        .route("/api/sessions/{id}/kick", post(api::kick))
         .layer(cors)
         .with_state(state)
         .fallback_service(static_svc)

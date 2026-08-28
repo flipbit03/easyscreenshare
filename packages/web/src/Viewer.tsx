@@ -7,10 +7,24 @@ import {
   Track,
   VideoQuality,
 } from "livekit-client";
-import { StreamNotFoundError, fetchViewerToken } from "@easyscreenshare/core";
+import {
+  PinRequiredError,
+  StreamNotFoundError,
+  TooManyAttemptsError,
+  WrongPinError,
+  fetchViewerToken,
+} from "@easyscreenshare/core";
 import { IconExpand, IconShrink, IconVolume, IconVolumeOff } from "./Icons";
 
-type Phase = "connecting" | "waiting" | "live" | "ended" | "notfound" | "error";
+type Phase =
+  | "connecting"
+  | "gate"
+  | "waiting"
+  | "live"
+  | "ended"
+  | "notfound"
+  | "error";
+const VIEWER_NAME_KEY = "ess:viewer-name";
 type QualityChoice = "auto" | "high" | "medium" | "low";
 
 const QUALITY_MAP: Record<Exclude<QualityChoice, "auto">, VideoQuality> = {
@@ -37,8 +51,15 @@ export default function Viewer({ sessionId }: { sessionId: string }) {
   const [quality, setQuality] = useState<QualityChoice>("high");
   const [hasAudio, setHasAudio] = useState(false);
   const [controlsVisible, setControlsVisible] = useState(true);
+  const [viewerName, setViewerName] = useState(
+    () => localStorage.getItem(VIEWER_NAME_KEY) ?? "",
+  );
+  const [pinInput, setPinInput] = useState("");
+  const [gateError, setGateError] = useState("");
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const connReported = useRef(false);
+  const joinBusy = useRef(false);
+  const joinRef = useRef<(pin?: string) => Promise<void>>(async () => {});
 
   useEffect(() => {
     const room = new Room({ adaptiveStream: true });
@@ -107,26 +128,53 @@ export default function Viewer({ sessionId }: { sessionId: string }) {
         setPhase((prev) => (prev === "live" ? "ended" : prev));
       });
 
-    (async () => {
+    const join = async (pin?: string) => {
+      if (joinBusy.current) return;
+      joinBusy.current = true;
+      setGateError("");
       try {
-        const { token, livekitUrl } = await fetchViewerToken(sessionId);
+        const name = localStorage.getItem(VIEWER_NAME_KEY) ?? undefined;
+        const { token, livekitUrl } = await fetchViewerToken(sessionId, {
+          pin,
+          name,
+        });
         await room.connect(livekitUrl, token);
         if (!publisherPresent()) setPhase("waiting");
+        else setPhase((prev) => (prev === "gate" ? "connecting" : prev));
       } catch (e) {
-        if (e instanceof StreamNotFoundError) {
+        if (e instanceof PinRequiredError) {
+          setPhase("gate");
+        } else if (e instanceof WrongPinError) {
+          setPhase("gate");
+          if (pin !== undefined) setGateError("wrong PIN");
+        } else if (e instanceof TooManyAttemptsError) {
+          setPhase("gate");
+          setGateError("too many tries — wait a minute");
+        } else if (e instanceof StreamNotFoundError) {
           setPhase("notfound");
         } else {
           setError(e instanceof Error ? e.message : String(e));
           setPhase("error");
         }
+      } finally {
+        joinBusy.current = false;
       }
-    })();
+    };
+    joinRef.current = join;
+    void join();
 
     return () => {
       void room.disconnect();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
+
+  const submitGate = () => {
+    const n = viewerName.trim();
+    if (n) localStorage.setItem(VIEWER_NAME_KEY, n);
+    else localStorage.removeItem(VIEWER_NAME_KEY);
+    void joinRef.current(pinInput.trim());
+  };
 
   const toggleMute = () => {
     const next = !muted;
@@ -191,6 +239,42 @@ export default function Viewer({ sessionId }: { sessionId: string }) {
               easyscreenshare<span className="wordmark-dot" aria-hidden="true" />
             </span>
             {phase === "connecting" && <p>connecting…</p>}
+            {phase === "gate" && (
+              <div className="gate">
+                <p>This stream is closed — enter the PIN.</p>
+                <input
+                  className="gate-input"
+                  type="text"
+                  placeholder="your name (optional)"
+                  maxLength={64}
+                  value={viewerName}
+                  onChange={(e) => setViewerName(e.target.value)}
+                />
+                <input
+                  className="gate-input gate-pin"
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  placeholder="PIN"
+                  maxLength={4}
+                  value={pinInput}
+                  onChange={(e) =>
+                    setPinInput(e.target.value.replace(/[^0-9]/g, ""))
+                  }
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") submitGate();
+                  }}
+                />
+                {gateError && <p className="err">{gateError}</p>}
+                <button
+                  className="gate-join"
+                  onClick={submitGate}
+                  disabled={pinInput.length < 4}
+                >
+                  Watch
+                </button>
+              </div>
+            )}
             {phase === "waiting" && <p>waiting for the stream to start…</p>}
             {phase === "ended" && <p>stream ended</p>}
             {phase === "notfound" && (

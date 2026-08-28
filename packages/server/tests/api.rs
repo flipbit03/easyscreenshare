@@ -14,6 +14,8 @@ fn test_config() -> Config {
         livekit_api_key: "devkey".into(),
         livekit_api_secret: "secret".into(),
         livekit_public_url: "ws://localhost:7880".into(),
+        // Unreachable on purpose: kick's LiveKit call must fail gracefully.
+        livekit_internal_url: "http://127.0.0.1:1".into(),
         public_base_url: "http://test.local".into(),
         static_dir: "does-not-exist".into(),
     }
@@ -78,30 +80,140 @@ async fn create_session_mints_publish_only_token() {
 async fn viewer_token_404_for_unknown_session() {
     // A dead/never-created link must 404, not hand out a token.
     let app = app();
-    let req = Request::get("/api/sessions/AbC123xYz456/token")
-        .body(Body::empty())
-        .unwrap();
-    let (status, _) = send(&app, req).await;
+    let (status, _) = send(
+        &app,
+        post_json("/api/sessions/AbC123xYz456/token", json!({})),
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
-async fn viewer_token_works_after_session_created() {
+async fn closed_stream_pin_flow() {
+    let app = app();
+    // Default = closed: the response carries a 4-digit pin.
+    let (_, created) = send(&app, create_random()).await;
+    let id = created["sessionId"].as_str().unwrap().to_owned();
+    let pin = created["pin"].as_str().unwrap().to_owned();
+    assert_eq!(pin.len(), 4);
+    assert!(pin.chars().all(|c| c.is_ascii_digit()));
+
+    // No pin -> 401 (pin required).
+    let (s, _) = send(
+        &app,
+        post_json(&format!("/api/sessions/{id}/token"), json!({})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    // Wrong pin -> 403.
+    let (s, _) = send(
+        &app,
+        post_json(
+            &format!("/api/sessions/{id}/token"),
+            json!({"pin": "0000x"}),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    // Correct pin -> token, name stamped.
+    let (s, json) = send(
+        &app,
+        post_json(
+            &format!("/api/sessions/{id}/token"),
+            json!({"pin": pin, "name": "Cadu"}),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let claims = jwt_claims(json["token"].as_str().unwrap());
+    assert_eq!(claims["name"], "Cadu");
+    assert_eq!(claims["video"]["canPublish"], false);
+}
+
+#[tokio::test]
+async fn wrong_pin_rate_limited() {
     let app = app();
     let (_, created) = send(&app, create_random()).await;
-    let id = created["sessionId"].as_str().unwrap();
+    let id = created["sessionId"].as_str().unwrap().to_owned();
+    for _ in 0..5 {
+        let (s, _) = send(
+            &app,
+            post_json(&format!("/api/sessions/{id}/token"), json!({"pin": "XXXX"})),
+        )
+        .await;
+        assert_eq!(s, StatusCode::FORBIDDEN);
+    }
+    // 6th attempt in the window -> throttled, even with the RIGHT pin.
+    let pin = created["pin"].as_str().unwrap();
+    let (s, _) = send(
+        &app,
+        post_json(&format!("/api/sessions/{id}/token"), json!({"pin": pin})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::TOO_MANY_REQUESTS);
+}
 
-    let req = Request::get(format!("/api/sessions/{id}/token"))
-        .body(Body::empty())
-        .unwrap();
-    let (status, json) = send(&app, req).await;
-    assert_eq!(status, StatusCode::OK);
+#[tokio::test]
+async fn public_stream_needs_no_pin() {
+    let app = app();
+    let (_, created) = send(&app, post_json("/api/sessions", json!({"public": true}))).await;
+    assert!(created["pin"].is_null());
+    let id = created["sessionId"].as_str().unwrap();
+    let (s, json) = send(
+        &app,
+        post_json(&format!("/api/sessions/{id}/token"), json!({})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    // No name given -> server invents SomeoneN.
     let claims = jwt_claims(json["token"].as_str().unwrap());
-    assert_eq!(
-        claims["video"]["canPublish"], false,
-        "viewer must NEVER publish"
-    );
-    assert_eq!(claims["video"]["canSubscribe"], true);
+    assert!(claims["name"].as_str().unwrap().starts_with("Someone"));
+}
+
+#[tokio::test]
+async fn kick_rotates_pin_and_requires_secret() {
+    let app = app();
+    let (_, created) = send(&app, create_random()).await;
+    let id = created["sessionId"].as_str().unwrap().to_owned();
+    let secret = created["sessionSecret"].as_str().unwrap().to_owned();
+    let old_pin = created["pin"].as_str().unwrap().to_owned();
+
+    // Wrong secret -> forbidden.
+    let (s, _) = send(
+        &app,
+        post_json(
+            &format!("/api/sessions/{id}/kick"),
+            json!({"secret": "nope", "identity": "viewer-x"}),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+
+    // Right secret -> pin rotates (LiveKit disconnect is best-effort false
+    // in tests, since no LiveKit is running).
+    let (s, json) = send(
+        &app,
+        post_json(
+            &format!("/api/sessions/{id}/kick"),
+            json!({"secret": secret, "identity": "viewer-x"}),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let new_pin = json["pin"].as_str().unwrap();
+    assert_eq!(new_pin.len(), 4);
+    assert_ne!(new_pin, old_pin);
+
+    // Old pin no longer admits.
+    let (s, _) = send(
+        &app,
+        post_json(
+            &format!("/api/sessions/{id}/token"),
+            json!({"pin": old_pin}),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
@@ -112,11 +224,14 @@ async fn vanity_name_is_claimed_first_come_first_served() {
     // Second claim while the first is live → conflict.
     let (s2, _) = send(&app, post_json("/api/sessions", json!({ "name": "cadu" }))).await;
     assert_eq!(s2, StatusCode::CONFLICT);
-    // A viewer can join the claimed name.
-    let req = Request::get("/api/sessions/cadu/token")
-        .body(Body::empty())
-        .unwrap();
-    let (status, _) = send(&app, req).await;
+    // A viewer can join the claimed name (with its pin).
+    let (_, created) = send(&app, post_json("/api/sessions", json!({ "name": "cadu2" }))).await;
+    let pin = created["pin"].as_str().unwrap();
+    let (status, _) = send(
+        &app,
+        post_json("/api/sessions/cadu2/token", json!({"pin": pin})),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
 }
 
