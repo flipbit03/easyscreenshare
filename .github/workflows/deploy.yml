@@ -18,6 +18,14 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    # Declaring an environment makes Actions record a GitHub Deployment per
+    # run: the repo sidebar gets a Deployments panel, commits get a green
+    # "View deployment" link to the site, and history lives under
+    # /deployments. Green is truthful — the job only succeeds after the
+    # healthz gate below.
+    environment:
+      name: production
+      url: https://easyscreenshare.flipbit03.com
     permissions:
       contents: read
       packages: write
