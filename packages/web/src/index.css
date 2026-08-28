@@ -692,14 +692,15 @@ input[type="range"]:disabled {
   border-color: var(--accent);
 }
 .gate-prefix {
-  padding: 0.55rem 0.7rem;
+  /* Fixed width so the NAME and PIN dividers align in a column. */
+  flex: 0 0 4.6rem;
+  padding: 0.55rem 0;
   color: var(--text-2);
   font-size: 0.85rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   border-right: 1px solid var(--line);
-  min-width: 3.6rem;
   text-align: center;
 }
 .gate-field input {
@@ -711,11 +712,6 @@ input[type="range"]:disabled {
   color: var(--text);
   padding: 0.55rem 0.8rem;
   outline: none;
-}
-.gate-field .gate-pin {
-  font-family: var(--font-display);
-  font-size: 1.15rem;
-  letter-spacing: 0.35em;
 }
 .gate-join {
   font: inherit;
