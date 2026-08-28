@@ -37,6 +37,7 @@ const api = {
     excludedApps: string[];
     publicStream: boolean;
     notifyJoins: boolean;
+    liveBorder: boolean;
   }> => ipcRenderer.invoke("settings:get"),
   notifyLive: (info: { shareUrl: string; pin: string | null }) =>
     ipcRenderer.send("share:live", info),

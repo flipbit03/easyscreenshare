@@ -18,6 +18,7 @@ import {
   Menu,
   nativeImage,
   Notification,
+  screen,
   session,
   shell,
   Tray,
@@ -44,6 +45,8 @@ interface Settings {
   publicStream: boolean;
   /** Balloon when a viewer joins. */
   notifyJoins: boolean;
+  /** Red on-air frame while streaming. */
+  liveBorder: boolean;
 }
 
 export interface AudioRoot {
@@ -118,6 +121,7 @@ function main() {
       excludedApps: [...DISCORD_APPS],
       publicStream: false,
       notifyJoins: true,
+      liveBorder: true,
     };
     try {
       const loaded = JSON.parse(fs.readFileSync(settingsPath(), "utf8"));
@@ -304,6 +308,63 @@ function main() {
     pollTimer = null;
   };
 
+  // ---------- live border ----------
+  // On-air lamp: red frame on the shared display (screen shares) or the
+  // primary display (window shares). Click-through, unfocusable, and
+  // content-protected (WDA_EXCLUDEFROMCAPTURE) so viewers never see it.
+  // Limitation: true exclusive-fullscreen apps bypass DWM and cover it.
+  let borderWin: BrowserWindow | null = null;
+  /** desktopCapturer source id → Electron display id (screens only). */
+  const screenDisplayIds = new Map<string, string>();
+
+  const borderBounds = (): Electron.Rectangle => {
+    if (chosenSource?.isScreen) {
+      const wanted = screenDisplayIds.get(chosenSource.id);
+      const match = screen.getAllDisplays().find((d) => String(d.id) === wanted);
+      if (match) return match.bounds;
+    }
+    return screen.getPrimaryDisplay().bounds;
+  };
+
+  const BORDER_HTML =
+    "data:text/html;charset=utf-8," +
+    encodeURIComponent(
+      "<style>html,body{margin:0;background:transparent;overflow:hidden}" +
+        "div{position:fixed;inset:0;border:2px solid #ff3b30;" +
+        "animation:p 1.1s ease-in-out 3}" +
+        "@keyframes p{50%{opacity:.15}}</style><div></div>",
+    );
+
+  /** (Re)creates the frame; recreating on source switch sidesteps DPI-move
+   * quirks of transparent windows and replays the pulse as feedback. */
+  const showBorder = () => {
+    hideBorder();
+    if (!settings.liveBorder) return;
+    const bw = new BrowserWindow({
+      ...borderBounds(),
+      frame: false,
+      transparent: true,
+      resizable: false,
+      movable: false,
+      focusable: false,
+      skipTaskbar: true,
+      alwaysOnTop: true,
+      hasShadow: false,
+      show: false,
+    });
+    bw.setIgnoreMouseEvents(true);
+    bw.setContentProtection(true);
+    bw.setAlwaysOnTop(true, "screen-saver");
+    borderWin = bw;
+    void bw.loadURL(BORDER_HTML).then(() => {
+      if (borderWin === bw) bw.showInactive();
+    });
+  };
+  const hideBorder = () => {
+    borderWin?.destroy();
+    borderWin = null;
+  };
+
   // ---------- tray ----------
   const assetsDir = () =>
     app.isPackaged
@@ -419,6 +480,16 @@ function main() {
           click: (item) => {
             settings.notifyJoins = item.checked;
             saveSettings();
+          },
+        },
+        {
+          label: "Red border while live",
+          type: "checkbox",
+          checked: settings.liveBorder,
+          click: (item) => {
+            settings.liveBorder = item.checked;
+            saveSettings();
+            if (live) showBorder(); // respects the flag; hides when off
           },
         },
       ],
@@ -563,6 +634,9 @@ function main() {
       thumbnailSize: { width: 360, height: 202 },
       fetchWindowIcons: true,
     });
+    for (const s of sources) {
+      if (s.display_id) screenDisplayIds.set(s.id, s.display_id);
+    }
     return sources
       .filter((s) => s.name !== "easyscreenshare")
       .map((s) => ({
@@ -578,6 +652,7 @@ function main() {
     "picker:choose",
     async (_e, source: { id: string; name: string; isScreen: boolean }) => {
       chosenSource = source;
+      if (live) showBorder(); // source switch → frame follows the new target
       return armForChoice();
     },
   );
@@ -629,6 +704,7 @@ function main() {
       );
       updateTray();
       startPolling();
+      showBorder();
       win?.hide();
       balloon(
         "You're live",
@@ -649,6 +725,7 @@ function main() {
     mixerActive = false;
     mixerArmPid = null;
     stopPolling();
+    hideBorder();
     updateTray();
     win?.close();
   });
