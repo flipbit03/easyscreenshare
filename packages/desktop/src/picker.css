@@ -165,3 +165,16 @@ body {
 .name-badge-available { color: var(--ok); }
 .name-badge-taken, .name-badge-invalid { color: #ff8a85; }
 .name-badge-checking { color: var(--text-2); }
+
+.audio-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+  color: var(--text-2);
+  font-size: 0.92rem;
+  cursor: pointer;
+}
+.audio-row input {
+  accent-color: var(--accent);
+}

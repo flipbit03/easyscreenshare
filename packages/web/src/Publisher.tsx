@@ -48,6 +48,7 @@ export default function Publisher() {
   const [preset, setPreset] = useState<AudioPresetName>("balanced");
   const [videoMode, setVideoMode] = useState<VideoModeName>("motion");
   const [gotAudio, setGotAudio] = useState(true);
+  const [audioMuted, setAudioMuted] = useState(false);
   const [viewers, setViewers] = useState<ViewerRow[]>([]);
   const [name, setName] = useState(() => localStorage.getItem(NAME_KEY) ?? "");
   const [nameStatus, setNameStatus] = useState<NameStatus>("idle");
@@ -174,6 +175,7 @@ export default function Publisher() {
       joinedAtRef.current.clear();
       handle.onEnded(() => void stop());
       setGotAudio(handle.hasAudio);
+      setAudioMuted(false);
       setShareUrl(session.shareUrl);
       setPin(session.pin);
       try {
@@ -253,6 +255,11 @@ export default function Publisher() {
   const changePreset = (p: AudioPresetName) => {
     setPreset(p);
     void handleRef.current?.setAudioPreset(p);
+  };
+
+  const toggleMute = (muted: boolean) => {
+    setAudioMuted(muted);
+    void handleRef.current?.setAudioMuted(muted);
   };
 
   const changeVideoMode = (m: VideoModeName) => {
@@ -365,9 +372,9 @@ export default function Publisher() {
               </span>
             )}
             {gotAudio && (
-              <span className="audio-chip">
+              <span className={audioMuted ? "audio-chip muted" : "audio-chip"}>
                 <span className="audio-chip-dot" aria-hidden="true" />
-                system audio on
+                {audioMuted ? "audio muted" : "system audio on"}
               </span>
             )}
           </div>
@@ -456,6 +463,17 @@ export default function Publisher() {
                 ))}
               </div>
             </div>
+          )}
+
+          {gotAudio && (
+            <label className="public-row">
+              <input
+                type="checkbox"
+                checked={audioMuted}
+                onChange={(e) => toggleMute(e.target.checked)}
+              />
+              Mute audio — viewers hear silence until you untick this
+            </label>
           )}
 
           <div className="live-actions">

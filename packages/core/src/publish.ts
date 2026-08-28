@@ -110,6 +110,9 @@ export interface PublishHandle {
   hasAudio: boolean;
   setAudioPreset(name: AudioPresetName): Promise<void>;
   setVideoMode(name: VideoModeName): Promise<void>;
+  /** Temporarily silence the stream audio (and back). Track-level mute: the
+   * transport stays up, so resume is instant and viewers never reconnect. */
+  setAudioMuted(muted: boolean): Promise<void>;
   /** Swap the live audio track without renegotiation (viewers hear a blip
    * at most). Used to re-arm capture when audio exclusions change. */
   replaceAudioTrack(track: MediaStreamTrack): Promise<void>;
@@ -186,6 +189,7 @@ export async function startScreenShare(opts: StartOptions): Promise<PublishHandl
     : () => {};
 
   let currentVideoTrack = videoTrack;
+  let audioMuted = false;
   const endedCallbacks: Array<() => void> = [];
   const wireEnded = (t: MediaStreamTrack) =>
     t.addEventListener("ended", () => {
@@ -208,6 +212,12 @@ export async function startScreenShare(opts: StartOptions): Promise<PublishHandl
       }));
       await sender.setParameters(params);
     },
+    async setAudioMuted(muted) {
+      audioMuted = muted;
+      if (!audioPub) return;
+      if (muted) await audioPub.mute();
+      else await audioPub.unmute();
+    },
     async replaceAudioTrack(track) {
       const lt = audioPub?.track as unknown as
         | { replaceTrack?: (t: MediaStreamTrack) => Promise<void> }
@@ -217,6 +227,7 @@ export async function startScreenShare(opts: StartOptions): Promise<PublishHandl
         return;
       }
       await lt.replaceTrack(track);
+      if (audioMuted) track.enabled = false; // a source switch must not unmute
       currentAudioTrack?.stop();
       currentAudioTrack = track;
     },

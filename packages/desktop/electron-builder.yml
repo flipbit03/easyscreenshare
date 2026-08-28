@@ -11,3 +11,11 @@ win:
   signAndEditExecutable: false
 portable:
   artifactName: easyscreenshare-${version}-portable.exe
+linux:
+  target: AppImage
+  category: Network
+  # Must match the Forge-packaged binary; the default derives from the scoped
+  # package name (@easyscreenshare/desktop) and is invalid in file paths.
+  executableName: easyscreenshare
+appImage:
+  artifactName: easyscreenshare-${version}-x86_64.AppImage

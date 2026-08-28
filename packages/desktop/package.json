@@ -10,7 +10,8 @@
     "package": "electron-forge package",
     "make": "electron-forge make",
     "check": "tsc --noEmit",
-    "make:win": "electron-forge package --platform=win32 --arch=x64 && electron-builder --prepackaged out/easyscreenshare-win32-x64 --win portable"
+    "make:win": "electron-forge package --platform=win32 --arch=x64 && electron-builder --prepackaged out/easyscreenshare-win32-x64 --win portable",
+    "make:linux": "electron-forge package --platform=linux --arch=x64 && electron-builder --prepackaged out/easyscreenshare-linux-x64 --linux appimage"
   },
   "devDependencies": {
     "@electron-forge/cli": "^7.11.0",

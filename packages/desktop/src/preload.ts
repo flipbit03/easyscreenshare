@@ -38,8 +38,10 @@ const api = {
     publicStream: boolean;
     notifyJoins: boolean;
     liveBorder: boolean;
+    shareAudio: boolean;
   }> => ipcRenderer.invoke("settings:get"),
-  notifyLive: (info: { shareUrl: string; pin: string | null }) =>
+  setShareAudio: (v: boolean) => ipcRenderer.send("settings:share-audio", v),
+  notifyLive: (info: { shareUrl: string; pin: string | null; hasAudio: boolean }) =>
     ipcRenderer.send("share:live", info),
   notifyStopped: () => ipcRenderer.send("share:stopped"),
   hidePicker: () => ipcRenderer.send("picker:hide"),
@@ -65,6 +67,9 @@ const api = {
   },
   onExcludeSet: (cb: (excludedApps: string[]) => void) => {
     ipcRenderer.on("audio:exclude-set", (_e, list) => cb(list));
+  },
+  onAudioMute: (cb: (muted: boolean) => void) => {
+    ipcRenderer.on("audio:mute", (_e, muted) => cb(muted));
   },
   onAudioPreset: (cb: (name: "voice" | "balanced" | "music") => void) => {
     ipcRenderer.on("settings:audio", (_e, name) => cb(name));

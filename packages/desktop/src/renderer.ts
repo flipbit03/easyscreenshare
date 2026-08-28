@@ -95,6 +95,16 @@ async function renderPicker(mode: "start" | "switch" = "start") {
     nameRow.append(field);
     app.append(nameRow);
     if (vanityName) runCheck(); // re-check the remembered name
+
+    const audioRow = h("label", "audio-row");
+    const audioCb = h("input") as HTMLInputElement;
+    audioCb.type = "checkbox";
+    audioCb.checked = (await window.ess.getSettings()).shareAudio;
+    audioCb.addEventListener("change", () =>
+      window.ess.setShareAudio(audioCb.checked),
+    );
+    audioRow.append(audioCb, h("span", undefined, "Share audio"));
+    app.append(audioRow);
   }
 
   const grid = h("div", "grid");
@@ -187,7 +197,9 @@ async function startShare(source: SourceInfo) {
     });
     const settings = await window.ess.getSettings();
     if (armed.mixer) renderStatus("Starting…", false, "capturing app audio…");
-    const audio = await buildAudio(source, armed);
+    const audio = settings.shareAudio
+      ? await buildAudio(source, armed)
+      : { track: undefined, sub: "Audio: off" };
 
     const sess = await createSession(
       { name: vanityName.trim() || undefined, public: settings.publicStream },
@@ -197,7 +209,7 @@ async function startShare(source: SourceInfo) {
     handle = await startScreenShare({
       livekitUrl: sess.livekitUrl,
       token: sess.publisherToken,
-      audio: true,
+      audio: settings.shareAudio,
       audioPreset: settings.audioPreset,
       videoMode: settings.videoMode,
       audioTrackOverride: audio.track,
@@ -209,7 +221,11 @@ async function startShare(source: SourceInfo) {
     });
     handle.onEnded(() => void stopShare());
     watchViewers(handle);
-    window.ess.notifyLive({ shareUrl: sess.shareUrl, pin: sess.pin });
+    window.ess.notifyLive({
+      shareUrl: sess.shareUrl,
+      pin: sess.pin,
+      hasAudio: handle.hasAudio,
+    });
     renderStatus("You're live — this window can stay hidden.", false, audio.sub);
   } catch (e) {
     mixer?.stop();
@@ -234,9 +250,13 @@ async function switchSource(source: SourceInfo) {
       isScreen: source.isScreen,
     });
     // New video (+ app audio when it's a window share) from the new source.
+    const settings = await window.ess.getSettings();
     const stream = await navigator.mediaDevices.getDisplayMedia({
       video: true,
-      audio: source.isScreen ? false : SYSTEM_AUDIO_CONSTRAINTS,
+      audio:
+        source.isScreen || !settings.shareAudio
+          ? false
+          : SYSTEM_AUDIO_CONSTRAINTS,
     } as DisplayMediaStreamOptions);
     const newVideo = stream.getVideoTracks()[0];
     if (newVideo) await handle.replaceVideoTrack(newVideo);
@@ -340,6 +360,7 @@ window.ess.onSwitchSource(() => void renderPicker("switch"));
 window.ess.onAudioRearm(() => void rearmAudio());
 window.ess.onMixerSync((diff) => void mixer?.sync(diff));
 window.ess.onExcludeSet((list) => mixer?.setExcluded(list));
+window.ess.onAudioMute((muted) => void handle?.setAudioMuted(muted));
 window.ess.onAudioPreset((name) => void handle?.setAudioPreset(name));
 window.ess.onVideoMode((name) => void handle?.setVideoMode(name));
 

@@ -1,6 +1,7 @@
 # Publishing a GitHub Release (tag vX.Y.Z) builds the Windows portable .exe
-# and attaches it to that release. The version is STAMPED from the tag at
-# build time — the repo keeps 0.0.0 forever, so no version-bump commits.
+# and the Linux AppImage and attaches both to that release. The version is
+# STAMPED from the tag at build time — the repo keeps 0.0.0 forever, so no
+# version-bump commits.
 #   Cut one with:  gh release create v0.3.2 --generate-notes
 name: Release Desktop
 
@@ -14,8 +15,20 @@ on:
         required: true
 
 jobs:
-  windows:
-    runs-on: windows-latest
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+            make: make:win
+            glob: "*.exe"
+          - os: ubuntu-latest
+            platform: linux
+            make: make:linux
+            glob: "*.AppImage"
+    runs-on: ${{ matrix.os }}
     permissions:
       contents: write
     steps:
@@ -53,14 +66,14 @@ jobs:
 
       - run: pnpm --filter @easyscreenshare/core build
 
-      - run: pnpm --filter @easyscreenshare/desktop run make:win
+      - run: pnpm --filter @easyscreenshare/desktop run ${{ matrix.make }}
 
       - name: Checksums
         shell: bash
         run: |
           cd packages/desktop/out/portable
-          sha256sum *.exe > SHA256SUMS.txt
-          cat SHA256SUMS.txt
+          sha256sum ${{ matrix.glob }} > SHA256SUMS-${{ matrix.platform }}.txt
+          cat SHA256SUMS-${{ matrix.platform }}.txt
 
       - name: Attach to release
         if: github.event_name == 'release'
@@ -69,11 +82,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release upload "${{ steps.ver.outputs.tag }}" \
-            packages/desktop/out/portable/*.exe \
-            packages/desktop/out/portable/SHA256SUMS.txt \
+            packages/desktop/out/portable/${{ matrix.glob }} \
+            packages/desktop/out/portable/SHA256SUMS-${{ matrix.platform }}.txt \
             --clobber
 
       - uses: actions/upload-artifact@v4
         with:
-          name: easyscreenshare-portable-${{ steps.ver.outputs.num }}
-          path: packages/desktop/out/portable/*
+          name: easyscreenshare-${{ matrix.platform }}-${{ steps.ver.outputs.num }}
+          path: |
+            packages/desktop/out/portable/${{ matrix.glob }}
+            packages/desktop/out/portable/SHA256SUMS-${{ matrix.platform }}.txt

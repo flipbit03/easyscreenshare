@@ -47,6 +47,8 @@ interface Settings {
   notifyJoins: boolean;
   /** Red on-air frame while streaming. */
   liveBorder: boolean;
+  /** Capture audio at all (picker checkbox, applies to the next share). */
+  shareAudio: boolean;
 }
 
 export interface AudioRoot {
@@ -92,6 +94,10 @@ function main() {
   }
   let viewerRows: ViewerRow[] = [];
   let currentPin: string | null = null;
+  /** Whether the live share actually carries audio (renderer-reported). */
+  let liveHasAudio = false;
+  /** Transient master mute; resets on every new share. */
+  let audioMuted = false;
 
   const ago = (ts: number): string => {
     const m = Math.floor(Math.max(0, Date.now() - ts) / 60000);
@@ -122,6 +128,7 @@ function main() {
       publicStream: false,
       notifyJoins: true,
       liveBorder: true,
+      shareAudio: true,
     };
     try {
       const loaded = JSON.parse(fs.readFileSync(settingsPath(), "utf8"));
@@ -231,6 +238,11 @@ function main() {
     mixerActive = false;
     appTarget = null;
     lastRoots = [];
+    if (!settings.shareAudio) {
+      // Audio off for this share: no loopback, no mixer, no enumeration.
+      baseAudio = undefined;
+      return { mixer: false, roots: [], excludedApps: [] };
+    }
     if (process.platform === "linux") {
       baseAudio = undefined; // tier 2: no loopback arming (research 04)
       return { mixer: false, roots: [], excludedApps: [] };
@@ -554,6 +566,16 @@ function main() {
                   clipboard.writeText(`${shareUrl} · PIN: ${currentPin}`),
               },
               {
+                label: "Mute audio",
+                type: "checkbox",
+                checked: audioMuted,
+                visible: liveHasAudio,
+                click: (item) => {
+                  audioMuted = item.checked;
+                  win?.webContents.send("audio:mute", audioMuted);
+                },
+              },
+              {
                 label: "Change what you're sharing…",
                 click: () => {
                   openPicker();
@@ -694,12 +716,19 @@ function main() {
 
   ipcMain.on("picker:hide", () => win?.hide());
 
+  ipcMain.on("settings:share-audio", (_e, v: boolean) => {
+    settings.shareAudio = v;
+    saveSettings();
+  });
+
   ipcMain.on(
     "share:live",
-    (_e, info: { shareUrl: string; pin: string | null }) => {
+    (_e, info: { shareUrl: string; pin: string | null; hasAudio: boolean }) => {
       live = true;
       shareUrl = info.shareUrl;
       currentPin = info.pin;
+      liveHasAudio = info.hasAudio;
+      audioMuted = false;
       clipboard.writeText(
         info.pin ? `${info.shareUrl} · PIN: ${info.pin}` : info.shareUrl,
       );
@@ -725,6 +754,8 @@ function main() {
     appTarget = null;
     mixerActive = false;
     mixerArmPid = null;
+    liveHasAudio = false;
+    audioMuted = false;
     stopPolling();
     hideBorder();
     updateTray();

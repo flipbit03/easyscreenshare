@@ -279,6 +279,14 @@ input[type="range"]:disabled {
   border-radius: 50%;
   background: var(--ok);
 }
+.audio-chip.muted {
+  border-color: #4a2a26;
+  background: rgba(255, 92, 56, 0.08);
+  color: #ff8a85;
+}
+.audio-chip.muted .audio-chip-dot {
+  background: #ff8a85;
+}
 
 .sharebox {
   margin-top: 1.4rem;
