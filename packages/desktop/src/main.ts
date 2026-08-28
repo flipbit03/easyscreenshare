@@ -781,10 +781,15 @@ function main() {
         } as unknown as Parameters<typeof callback>[0]);
         return;
       }
-      callback({
+      // NEVER pass an `audio` key with an undefined value: Electron treats the
+      // key's presence as "audio provided", fails to convert undefined, and
+      // rejects the whole capture with "Invalid capture constraints"
+      // (field-hit on Linux, where baseAudio is always undefined).
+      const grant: Record<string, unknown> = {
         video: { id: chosenSource.id, name: chosenSource.name },
-        audio: baseAudio,
-      } as unknown as Parameters<typeof callback>[0]);
+      };
+      if (baseAudio) grant.audio = baseAudio;
+      callback(grant as unknown as Parameters<typeof callback>[0]);
     });
 
     if (process.platform === "darwin") app.dock?.hide();

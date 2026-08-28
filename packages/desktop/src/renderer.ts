@@ -226,7 +226,15 @@ async function startShare(source: SourceInfo) {
       pin: sess.pin,
       hasAudio: handle.hasAudio,
     });
-    renderStatus("You're live — this window can stay hidden.", false, audio.sub);
+    renderStatus(
+      "You're live — this window can stay hidden.",
+      false,
+      handle.hasAudio
+        ? audio.sub
+        : settings.shareAudio
+          ? "Audio: unavailable here — video only"
+          : "Audio: off",
+    );
   } catch (e) {
     mixer?.stop();
     mixer = null;
