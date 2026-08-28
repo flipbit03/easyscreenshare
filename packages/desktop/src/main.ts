@@ -18,7 +18,6 @@ import {
   Menu,
   nativeImage,
   Notification,
-  screen,
   session,
   shell,
   Tray,
@@ -45,8 +44,6 @@ interface Settings {
   publicStream: boolean;
   /** Balloon when a viewer joins. */
   notifyJoins: boolean;
-  /** Red on-air frame while streaming. */
-  liveBorder: boolean;
   /** Capture audio at all (picker checkbox, applies to the next share). */
   shareAudio: boolean;
 }
@@ -127,7 +124,6 @@ function main() {
       excludedApps: [...DISCORD_APPS],
       publicStream: false,
       notifyJoins: true,
-      liveBorder: true,
       shareAudio: true,
     };
     try {
@@ -320,93 +316,24 @@ function main() {
     pollTimer = null;
   };
 
-  // ---------- live border ----------
-  // On-air lamp: red frame on the shared display (screen shares) or the
-  // primary display (window shares). Click-through, unfocusable, and
-  // content-protected (WDA_EXCLUDEFROMCAPTURE) so viewers never see it.
-  // Limitation: true exclusive-fullscreen apps bypass DWM and cover it.
-  // X11 needs a running compositor for the transparency (any modern desktop);
-  // without one the overlay would paint solid black.
-  let borderWin: BrowserWindow | null = null;
-  /** desktopCapturer source id → Electron display id (screens only). */
-  const screenDisplayIds = new Map<string, string>();
-
-  // Wayland (incl. XWayland) can't do a click-through overlay: Electron's
-  // setIgnoreMouseEvents is a no-op there and windows can't be freely
-  // positioned/layered — field report: the "invisible" frame became a
-  // fullscreen window that ate every click. X11 proper works via the XShape
-  // input region. The tray LIVE state is the on-air indicator on Wayland.
-  const isWayland =
-    process.platform === "linux" &&
-    (!!process.env.WAYLAND_DISPLAY ||
-      process.env.XDG_SESSION_TYPE === "wayland");
-
-  const borderBounds = (): Electron.Rectangle => {
-    if (chosenSource?.isScreen) {
-      const wanted = screenDisplayIds.get(chosenSource.id);
-      const match = screen.getAllDisplays().find((d) => String(d.id) === wanted);
-      if (match) return match.bounds;
-    }
-    return screen.getPrimaryDisplay().bounds;
-  };
-
-  const BORDER_HTML =
-    "data:text/html;charset=utf-8," +
-    encodeURIComponent(
-      "<style>html,body{margin:0;background:transparent;overflow:hidden}" +
-        // Opacity-only pulse — constant 1px so the frame never changes weight.
-        "div{position:fixed;inset:0;border:1px solid #ff3b30;" +
-        "animation:p 1.1s ease-in-out 3}" +
-        "@keyframes p{50%{opacity:.15}}</style><div></div>",
-    );
-
-  /** (Re)creates the frame; recreating on source switch sidesteps DPI-move
-   * quirks of transparent windows and replays the pulse as feedback. */
-  const showBorder = () => {
-    hideBorder();
-    if (!settings.liveBorder) return;
-    if (isWayland) return;
-    const bw = new BrowserWindow({
-      ...borderBounds(),
-      frame: false,
-      transparent: true,
-      resizable: false,
-      movable: false,
-      focusable: false,
-      skipTaskbar: true,
-      alwaysOnTop: true,
-      hasShadow: false,
-      show: false,
-    });
-    bw.setIgnoreMouseEvents(true);
-    bw.setContentProtection(true);
-    bw.setAlwaysOnTop(true, "screen-saver");
-    borderWin = bw;
-    void bw.loadURL(BORDER_HTML).then(() => {
-      if (borderWin !== bw) return;
-      bw.showInactive();
-      // X11: mapping the window makes Chromium recompute its input region,
-      // clobbering the empty XShape region set while hidden — re-assert it
-      // after show or the overlay swallows every click.
-      bw.setIgnoreMouseEvents(true);
-    });
-  };
-  const hideBorder = () => {
-    borderWin?.destroy();
-    borderWin = null;
-  };
-
   // ---------- tray ----------
   const assetsDir = () =>
     app.isPackaged
       ? path.join(process.resourcesPath, "assets")
       : path.join(app.getAppPath(), "assets");
 
+  // On-air indicator lives in the icon itself: blue idle, red while live.
+  // (macOS keeps the monochrome template when idle so it adapts to the
+  // menu-bar theme; the live icon is non-template so it can be red.)
   const trayIcon = () =>
     nativeImage.createFromPath(
       path.join(
         assetsDir(),
-        process.platform === "darwin" ? "trayTemplate.png" : "tray.png",
+        live
+          ? "trayLive.png"
+          : process.platform === "darwin"
+            ? "trayTemplate.png"
+            : "tray.png",
       ),
     );
 
@@ -513,17 +440,6 @@ function main() {
             saveSettings();
           },
         },
-        {
-          label: "Red border while live",
-          type: "checkbox",
-          visible: !isWayland,
-          checked: settings.liveBorder,
-          click: (item) => {
-            settings.liveBorder = item.checked;
-            saveSettings();
-            if (live) showBorder(); // respects the flag; hides when off
-          },
-        },
       ],
     },
   ];
@@ -564,6 +480,7 @@ function main() {
 
   const updateTray = () => {
     if (!tray) return;
+    tray.setImage(trayIcon());
     tray.setToolTip(
       live
         ? `easyscreenshare v${app.getVersion()} — LIVE: ${viewerRows.length} ${
@@ -676,9 +593,6 @@ function main() {
       thumbnailSize: { width: 360, height: 202 },
       fetchWindowIcons: true,
     });
-    for (const s of sources) {
-      if (s.display_id) screenDisplayIds.set(s.id, s.display_id);
-    }
     return sources
       .filter((s) => s.name !== "easyscreenshare")
       .map((s) => ({
@@ -694,7 +608,6 @@ function main() {
     "picker:choose",
     async (_e, source: { id: string; name: string; isScreen: boolean }) => {
       chosenSource = source;
-      if (live) showBorder(); // source switch → frame follows the new target
       return armForChoice();
     },
   );
@@ -753,7 +666,6 @@ function main() {
       );
       updateTray();
       startPolling();
-      showBorder();
       win?.hide();
       balloon(
         "You're live",
@@ -776,7 +688,6 @@ function main() {
     liveHasAudio = false;
     audioMuted = false;
     stopPolling();
-    hideBorder();
     updateTray();
     win?.close();
   });
