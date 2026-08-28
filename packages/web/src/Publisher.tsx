@@ -78,6 +78,19 @@ export default function Publisher() {
     localStorage.setItem(PUBLIC_KEY, isPublic ? "1" : "0");
   }, [isPublic]);
 
+  // Ephemeral feedback: the copy ✓ and the kick notice both auto-dismiss
+  // (the rotated PIN stays visible in the PIN chip regardless).
+  useEffect(() => {
+    if (!copied) return;
+    const t = setTimeout(() => setCopied(""), 2000);
+    return () => clearTimeout(t);
+  }, [copied]);
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(""), 8000);
+    return () => clearTimeout(t);
+  }, [notice]);
+
   // Viewers list: names come from tokens, conn self-reported via attributes.
   useEffect(() => {
     if (phase !== "live") return;
@@ -121,8 +134,12 @@ export default function Publisher() {
   const copyText = async (kind: "link" | "both") => {
     const text =
       kind === "both" && pin ? `${shareUrl} · PIN: ${pin}` : shareUrl;
-    await navigator.clipboard.writeText(text);
-    setCopied(kind);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(kind); // auto-reverts via the timer effect above
+    } catch {
+      /* clipboard denied (insecure context/unfocused) — no false ✓ */
+    }
   };
 
   const start = async () => {
