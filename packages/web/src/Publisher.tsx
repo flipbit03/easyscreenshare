@@ -206,9 +206,15 @@ export default function Publisher() {
       if (r.pin) {
         setPin(r.pin);
         setCopied("");
-        setNotice(`Kicked ${v.name} — new PIN: ${r.pin}`);
+        setNotice(
+          r.disconnected
+            ? `Kicked ${v.name} — new PIN: ${r.pin}`
+            : `PIN rotated to ${r.pin} — couldn't drop ${v.name}'s connection`,
+        );
       } else {
-        setNotice(`Kicked ${v.name}`);
+        setNotice(
+          r.disconnected ? `Kicked ${v.name}` : `Couldn't drop ${v.name}'s connection`,
+        );
       }
     } catch (e) {
       setNotice(`Kick failed: ${e instanceof Error ? e.message : e}`);

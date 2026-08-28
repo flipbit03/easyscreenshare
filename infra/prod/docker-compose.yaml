@@ -16,7 +16,13 @@ services:
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
       LIVEKIT_PUBLIC_URL: wss://lk.easyscreenshare.flipbit03.com
+      # LiveKit runs with host networking; from this bridge-network container
+      # the host is reachable via the special host-gateway mapping. Without
+      # this, kick's RoomService call silently fails (localhost = container).
+      LIVEKIT_INTERNAL_URL: http://host.docker.internal:7880
       PUBLIC_BASE_URL: https://easyscreenshare.flipbit03.com
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "127.0.0.1:8090:8090"
 

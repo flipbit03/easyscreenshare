@@ -299,7 +299,10 @@ async function kickByIdentity(identity: string) {
     )?.name || "viewer";
   try {
     const r = await kickViewer(session.id, session.secret, identity, serverUrl);
-    window.ess.notifyPinRotated({ pin: r.pin, kickedName: name });
+    window.ess.notifyPinRotated({
+      pin: r.pin,
+      kickedName: r.disconnected ? name : `${name} (connection not dropped)`,
+    });
   } catch (e) {
     console.error("kick failed", e);
   }

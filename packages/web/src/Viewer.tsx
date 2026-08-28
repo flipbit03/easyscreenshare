@@ -132,6 +132,7 @@ export default function Viewer({ sessionId }: { sessionId: string }) {
       if (joinBusy.current) return;
       joinBusy.current = true;
       setGateError("");
+      if (pin !== undefined) setPhase("connecting"); // gate → feedback now
       try {
         const name = localStorage.getItem(VIEWER_NAME_KEY) ?? undefined;
         const { token, livekitUrl } = await fetchViewerToken(sessionId, {
