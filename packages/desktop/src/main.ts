@@ -325,9 +325,21 @@ function main() {
   // primary display (window shares). Click-through, unfocusable, and
   // content-protected (WDA_EXCLUDEFROMCAPTURE) so viewers never see it.
   // Limitation: true exclusive-fullscreen apps bypass DWM and cover it.
+  // X11 needs a running compositor for the transparency (any modern desktop);
+  // without one the overlay would paint solid black.
   let borderWin: BrowserWindow | null = null;
   /** desktopCapturer source id → Electron display id (screens only). */
   const screenDisplayIds = new Map<string, string>();
+
+  // Wayland (incl. XWayland) can't do a click-through overlay: Electron's
+  // setIgnoreMouseEvents is a no-op there and windows can't be freely
+  // positioned/layered — field report: the "invisible" frame became a
+  // fullscreen window that ate every click. X11 proper works via the XShape
+  // input region. The tray LIVE state is the on-air indicator on Wayland.
+  const isWayland =
+    process.platform === "linux" &&
+    (!!process.env.WAYLAND_DISPLAY ||
+      process.env.XDG_SESSION_TYPE === "wayland");
 
   const borderBounds = (): Electron.Rectangle => {
     if (chosenSource?.isScreen) {
@@ -353,6 +365,7 @@ function main() {
   const showBorder = () => {
     hideBorder();
     if (!settings.liveBorder) return;
+    if (isWayland) return;
     const bw = new BrowserWindow({
       ...borderBounds(),
       frame: false,
@@ -370,7 +383,12 @@ function main() {
     bw.setAlwaysOnTop(true, "screen-saver");
     borderWin = bw;
     void bw.loadURL(BORDER_HTML).then(() => {
-      if (borderWin === bw) bw.showInactive();
+      if (borderWin !== bw) return;
+      bw.showInactive();
+      // X11: mapping the window makes Chromium recompute its input region,
+      // clobbering the empty XShape region set while hidden — re-assert it
+      // after show or the overlay swallows every click.
+      bw.setIgnoreMouseEvents(true);
     });
   };
   const hideBorder = () => {
@@ -498,6 +516,7 @@ function main() {
         {
           label: "Red border while live",
           type: "checkbox",
+          visible: !isWayland,
           checked: settings.liveBorder,
           click: (item) => {
             settings.liveBorder = item.checked;
