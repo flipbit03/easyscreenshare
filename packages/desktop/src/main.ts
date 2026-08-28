@@ -32,6 +32,19 @@ declare const PICKER_VITE_NAME: string;
 const SERVER_URL = process.env.ESS_SERVER ?? "https://easyscreenshare.flipbit03.com";
 /** Normalized (lowercase, no .exe) names muted by the Discord toggle. */
 const DISCORD_APPS = ["discord", "discordptb", "discordcanary"];
+/** Shell/system window hosts: never audio roots, and never counted as a
+ * windowed ancestor. explorer is the ancestor of most desktop apps — letting
+ * it count folded every app into one "explorer" tree capture whenever a File
+ * Explorer window was open (field-hit: League of Legends, three levels deep,
+ * went silent while Spotify, a direct explorer child, kept mixing). */
+const SHELL_HOSTS = new Set([
+  "explorer",
+  "svchost",
+  "applicationframehost",
+  "sihost",
+  "taskhostw",
+  "dwm",
+]);
 
 type AudioPresetName = "voice" | "balanced" | "music";
 type VideoModeName = "motion" | "text";
@@ -198,15 +211,17 @@ function main() {
       let cur = byPid.get(pid)?.ppid;
       const seen = new Set<number>();
       while (cur && byPid.has(cur) && !seen.has(cur)) {
-        if (windowed.has(cur)) return true;
+        const node = byPid.get(cur)!;
+        if (windowed.has(cur) && !SHELL_HOSTS.has(node.name)) return true;
         seen.add(cur);
-        cur = byPid.get(cur)?.ppid;
+        cur = node.ppid;
       }
       return false;
     };
     const roots: AudioRoot[] = [];
     for (const p of procs) {
       if (!windowed.has(p.pid)) continue;
+      if (SHELL_HOSTS.has(p.name)) continue;
       if (hasWindowedAncestor(p.pid)) continue;
       if (p.pid === process.pid) continue;
       if (p.name === "easyscreenshare") continue; // never capture ourselves
