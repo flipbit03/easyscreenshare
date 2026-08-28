@@ -95,6 +95,10 @@ function main() {
   let liveHasAudio = false;
   /** Transient master mute; resets on every new share. */
   let audioMuted = false;
+  /** Apps whose loopback capture failed (renderer-reported, per share). */
+  let failedCaptures: string[] = [];
+  /** Already ballooned this share — warn once per app, not per poll. */
+  const balloonedFailures = new Set<string>();
 
   const ago = (ts: number): string => {
     const m = Math.floor(Math.max(0, Date.now() - ts) / 60000);
@@ -234,6 +238,8 @@ function main() {
     mixerActive = false;
     appTarget = null;
     lastRoots = [];
+    failedCaptures = [];
+    balloonedFailures.clear();
     if (!settings.shareAudio) {
       // Audio off for this share: no loopback, no mixer, no enumeration.
       baseAudio = undefined;
@@ -512,6 +518,11 @@ function main() {
                 },
               },
               {
+                label: `⚠ No audio from: ${failedCaptures.join(", ")}`,
+                visible: failedCaptures.length > 0,
+                enabled: false,
+              },
+              {
                 label: "Change what you're sharing…",
                 click: () => {
                   openPicker();
@@ -617,6 +628,26 @@ function main() {
     pokeActivation();
   });
 
+  // Mixer captured zero apps: re-arm the MAIN capture for full system
+  // loopback so the share still carries audio (no per-app exclusions).
+  ipcMain.handle("audio:loopback", () => {
+    baseAudio = "loopback";
+    mixerActive = false;
+  });
+
+  ipcMain.on("audio:capture-failed", (_e, names: string[]) => {
+    failedCaptures = names;
+    const fresh = names.filter((n) => !balloonedFailures.has(n));
+    for (const n of fresh) balloonedFailures.add(n);
+    if (fresh.length) {
+      balloon(
+        "Some app audio can't be captured",
+        `No stream audio from: ${fresh.join(", ")}`,
+      );
+    }
+    updateTray();
+  });
+
   ipcMain.on("viewers:update", (_e, rows: ViewerRow[]) => {
     const known = new Set(viewerRows.map((v) => v.identity));
     if (live && settings.notifyJoins) {
@@ -687,6 +718,8 @@ function main() {
     mixerArmPid = null;
     liveHasAudio = false;
     audioMuted = false;
+    failedCaptures = [];
+    balloonedFailures.clear();
     stopPolling();
     updateTray();
     win?.close();

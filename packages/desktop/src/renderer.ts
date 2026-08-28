@@ -175,9 +175,13 @@ async function buildAudio(
   if (armed.mixer) {
     mixer = new AppAudioMixer(window.ess, armed.excludedApps);
     const ok = await mixer.addAll(armed.roots);
+    window.ess.reportCaptureFailures(mixer.failedNames);
     if (ok === 0) {
       mixer.stop();
       mixer = null;
+      // Real fallback: one full system-loopback capture. No per-app
+      // exclusions, but full audio beats silence.
+      await window.ess.armSystemLoopback();
       return { sub: "Audio: system (per-app mix unavailable)" };
     }
     const muted = armed.excludedApps.length ? " — Discord muted" : "";
@@ -366,7 +370,12 @@ window.ess.onStopRequested(() => void stopShare());
 window.ess.onKickViewer((identity) => void kickByIdentity(identity));
 window.ess.onSwitchSource(() => void renderPicker("switch"));
 window.ess.onAudioRearm(() => void rearmAudio());
-window.ess.onMixerSync((diff) => void mixer?.sync(diff));
+window.ess.onMixerSync((diff) => {
+  if (!mixer) return;
+  void mixer.sync(diff).then(() => {
+    window.ess.reportCaptureFailures(mixer?.failedNames ?? []);
+  });
+});
 window.ess.onExcludeSet((list) => mixer?.setExcluded(list));
 window.ess.onAudioMute((muted) => void handle?.setAudioMuted(muted));
 window.ess.onAudioPreset((name) => void handle?.setAudioPreset(name));

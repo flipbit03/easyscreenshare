@@ -18,6 +18,9 @@ export class AppAudioMixer {
   private limiter = this.ctx.createDynamicsCompressor();
   private channels = new Map<number, Channel>();
   private excluded = new Set<string>();
+  /** pid → app name for roots whose loopback capture failed (e.g. anticheat-
+   * protected games). Surfaced to the tray so silence is never a mystery. */
+  private failed = new Map<number, string>();
   private ess: EssBridge;
 
   constructor(ess: EssBridge, excludedApps: string[]) {
@@ -37,6 +40,10 @@ export class AppAudioMixer {
 
   get size(): number {
     return this.channels.size;
+  }
+
+  get failedNames(): string[] {
+    return [...new Set(this.failed.values())].sort();
   }
 
   /** Sequentially captures every root. Individual failures are skipped —
@@ -59,7 +66,10 @@ export class AppAudioMixer {
       } as DisplayMediaStreamOptions);
       for (const t of stream.getVideoTracks()) t.stop();
       const audioTracks = stream.getAudioTracks();
-      if (!audioTracks.length) return false;
+      if (!audioTracks.length) {
+        this.failed.set(root.pid, root.name);
+        return false;
+      }
       const source = this.ctx.createMediaStreamSource(
         new MediaStream(audioTracks),
       );
@@ -67,14 +77,17 @@ export class AppAudioMixer {
       gain.gain.value = this.excluded.has(root.name) ? 0 : 1;
       source.connect(gain).connect(this.limiter);
       this.channels.set(root.pid, { name: root.name, gain, tracks: audioTracks });
+      this.failed.delete(root.pid);
       return true;
     } catch (e) {
       console.warn(`mixer: capture failed for ${root.name} (${root.pid})`, e);
+      this.failed.set(root.pid, root.name);
       return false;
     }
   }
 
   remove(pid: number) {
+    this.failed.delete(pid);
     const ch = this.channels.get(pid);
     if (!ch) return;
     for (const t of ch.tracks) t.stop();

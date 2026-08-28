@@ -31,13 +31,17 @@ const api = {
     isScreen: boolean;
   }): Promise<ArmResult> => ipcRenderer.invoke("picker:choose", source),
   armAudio: (pid: number): Promise<void> => ipcRenderer.invoke("audio:arm", pid),
+  /** Mixer came up empty — re-arm the main capture for full system loopback. */
+  armSystemLoopback: (): Promise<void> => ipcRenderer.invoke("audio:loopback"),
+  /** Apps the mixer could not capture; main surfaces them (balloon + tray). */
+  reportCaptureFailures: (names: string[]) =>
+    ipcRenderer.send("audio:capture-failed", names),
   getSettings: (): Promise<{
     audioPreset: "voice" | "balanced" | "music";
     videoMode: "motion" | "text";
     excludedApps: string[];
     publicStream: boolean;
     notifyJoins: boolean;
-    liveBorder: boolean;
     shareAudio: boolean;
   }> => ipcRenderer.invoke("settings:get"),
   setShareAudio: (v: boolean) => ipcRenderer.send("settings:share-audio", v),
