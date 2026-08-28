@@ -111,12 +111,16 @@ export default function Viewer({ sessionId }: { sessionId: string }) {
           setTimeout(() => void reportConnection(), 3000);
         } else if (track.kind === Track.Kind.Audio) {
           audioTrackRef.current = track;
-          // Mute BEFORE attach: attach() calls play(), and an unmuted play()
-          // without a user gesture is rejected by autoplay policy — leaving
-          // the element paused forever. Muted playback is always allowed.
+          // Muted playback until the user unmutes. Two traps here:
+          // 1) an unmuted play() without a user gesture is rejected by
+          //    autoplay policy (element stays paused forever), and
+          // 2) LiveKit's attach() UNMUTES the element it attaches to — so
+          //    muted must be re-asserted AFTER attach, or a viewer who has
+          //    already interacted (e.g. typed the PIN) hears audio at once.
           const el = new Audio();
           el.muted = true;
           track.attach(el);
+          el.muted = true; // attach() flips it — re-assert
           document.body.appendChild(el);
           setHasAudio(true);
         }
