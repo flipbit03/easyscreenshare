@@ -174,6 +174,12 @@ export default function Viewer({ sessionId }: { sessionId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
+  useEffect(() => {
+    if (!gateError) return;
+    const t = setTimeout(() => setGateError(""), 4000);
+    return () => clearTimeout(t);
+  }, [gateError]);
+
   const submitGate = () => {
     const n = viewerName.trim();
     if (n) localStorage.setItem(VIEWER_NAME_KEY, n);
@@ -246,30 +252,35 @@ export default function Viewer({ sessionId }: { sessionId: string }) {
             {phase === "connecting" && <p>connecting…</p>}
             {phase === "gate" && (
               <div className="gate">
-                <p>This stream is closed — enter the PIN.</p>
-                <input
-                  className="gate-input"
-                  type="text"
-                  placeholder="your name (optional)"
-                  maxLength={64}
-                  value={viewerName}
-                  onChange={(e) => setViewerName(e.target.value)}
-                />
-                <input
-                  className="gate-input gate-pin"
-                  type="text"
-                  inputMode="numeric"
-                  autoComplete="one-time-code"
-                  placeholder="PIN"
-                  maxLength={4}
-                  value={pinInput}
-                  onChange={(e) =>
-                    setPinInput(e.target.value.replace(/[^0-9]/g, ""))
-                  }
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") submitGate();
-                  }}
-                />
+                <p className="gate-title">This stream is closed</p>
+                <p className="gate-sub">ask the host for the 4-digit PIN</p>
+                <label className="gate-field">
+                  <span className="gate-prefix">name</span>
+                  <input
+                    type="text"
+                    placeholder="optional"
+                    maxLength={64}
+                    value={viewerName}
+                    onChange={(e) => setViewerName(e.target.value)}
+                  />
+                </label>
+                <label className="gate-field">
+                  <span className="gate-prefix">PIN</span>
+                  <input
+                    className="gate-pin"
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    maxLength={4}
+                    value={pinInput}
+                    onChange={(e) =>
+                      setPinInput(e.target.value.replace(/[^0-9]/g, ""))
+                    }
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") submitGate();
+                    }}
+                  />
+                </label>
                 <p className="gate-error" aria-live="polite">
                   {gateError || " "}
                 </p>
