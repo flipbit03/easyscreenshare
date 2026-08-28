@@ -50,6 +50,10 @@ export default function Viewer({ sessionId }: { sessionId: string }) {
   // the top layer; the viewer can drop to Auto to save bandwidth.
   const [quality, setQuality] = useState<QualityChoice>("high");
   const [hasAudio, setHasAudio] = useState(false);
+  /** Publisher-side mute ("Mute audio" on the sharer's end): the stream
+   * carries silence, so the viewer's own unmute plays nothing — say so, or
+   * the unmute button looks broken (field-hit). */
+  const [hostMuted, setHostMuted] = useState(false);
   const [controlsVisible, setControlsVisible] = useState(true);
   const [viewerName, setViewerName] = useState(
     () => localStorage.getItem(VIEWER_NAME_KEY) ?? "",
@@ -123,7 +127,14 @@ export default function Viewer({ sessionId }: { sessionId: string }) {
           el.muted = true; // attach() flips it — re-assert
           document.body.appendChild(el);
           setHasAudio(true);
+          setHostMuted(pub.isMuted); // may join while the host is muted
         }
+      })
+      .on(RoomEvent.TrackMuted, (pub) => {
+        if (pub.kind === Track.Kind.Audio) setHostMuted(true);
+      })
+      .on(RoomEvent.TrackUnmuted, (pub) => {
+        if (pub.kind === Track.Kind.Audio) setHostMuted(false);
       })
       .on(RoomEvent.ParticipantDisconnected, (p) => {
         if (p.identity === "publisher") setPhase("ended");
@@ -313,6 +324,9 @@ export default function Viewer({ sessionId }: { sessionId: string }) {
           muted
           style={{ display: phase === "live" ? "block" : "none" }}
         />
+        {phase === "live" && hostMuted && hasAudio && (
+          <div className="host-muted-badge">host muted the audio</div>
+        )}
         {phase === "live" && (
           <div
             className={showControls ? "controls-float" : "controls-float hidden"}
@@ -327,7 +341,15 @@ export default function Viewer({ sessionId }: { sessionId: string }) {
               className={mutedWithAudio ? "ctl unmute-cta" : "ctl"}
               onClick={toggleMute}
               disabled={!hasAudio}
-              title={!hasAudio ? "This stream has no audio" : muted ? "Unmute" : "Mute"}
+              title={
+                !hasAudio
+                  ? "This stream has no audio"
+                  : hostMuted
+                    ? "The host muted the stream audio"
+                    : muted
+                      ? "Unmute"
+                      : "Mute"
+              }
             >
               {muted || !hasAudio ? <IconVolumeOff /> : <IconVolume />}
             </button>

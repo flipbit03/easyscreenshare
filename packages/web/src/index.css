@@ -410,6 +410,21 @@ input[type="range"]:disabled {
   cursor: none;
 }
 
+.host-muted-badge {
+  position: absolute;
+  top: 1rem;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0.35rem 0.7rem;
+  border-radius: 10px;
+  background: rgba(11, 14, 20, 0.78);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(35, 44, 61, 0.9);
+  color: var(--text-2);
+  font-size: 0.8rem;
+  pointer-events: none;
+}
+
 .controls-float {
   position: absolute;
   bottom: 1.25rem;
