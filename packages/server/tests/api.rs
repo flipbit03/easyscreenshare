@@ -71,7 +71,11 @@ async fn create_session_mints_publish_only_token() {
     );
 
     let claims = jwt_claims(json["publisherToken"].as_str().unwrap());
-    assert_eq!(claims["video"]["room"], id);
+    // Room is "{id}-{nonce}", never the bare id: a reused room name would
+    // readmit viewers from a previous stream on the same URL.
+    let room = claims["video"]["room"].as_str().unwrap();
+    assert!(room.starts_with(&format!("{id}-")));
+    assert!(room.len() > id.len() + 1);
     assert_eq!(claims["video"]["canPublish"], true);
     assert_eq!(claims["video"]["canSubscribe"], false);
 }
@@ -233,6 +237,78 @@ async fn vanity_name_is_claimed_first_come_first_served() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn end_session_frees_name_immediately_and_requires_secret() {
+    let app = app();
+    let (_, created) = send(&app, post_json("/api/sessions", json!({ "name": "cadu" }))).await;
+    let secret = created["sessionSecret"].as_str().unwrap().to_owned();
+
+    // Wrong secret -> forbidden, name still claimed.
+    let (s, _) = send(
+        &app,
+        post_json("/api/sessions/cadu/end", json!({"secret": "nope"})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _) = send(&app, post_json("/api/sessions", json!({ "name": "cadu" }))).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+
+    // Right secret -> ended; the name is reclaimable IMMEDIATELY (no TTL
+    // wait — the "stuck name after stopping" annoyance).
+    let (s, _) = send(
+        &app,
+        post_json("/api/sessions/cadu/end", json!({"secret": secret})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (s, _) = send(&app, post_json("/api/sessions", json!({ "name": "cadu" }))).await;
+    assert_eq!(s, StatusCode::OK);
+
+    // A viewer for the dead session's id gets the NEW session's gate, not a
+    // token for the old room (the old entry is gone entirely).
+    let (s, _) = send(&app, post_json("/api/sessions/cadu/token", json!({}))).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED); // new closed stream: pin required
+}
+
+#[tokio::test]
+async fn reclaimed_name_gets_a_fresh_room() {
+    let app = app();
+    let (_, first) = send(&app, post_json("/api/sessions", json!({ "name": "cadu" }))).await;
+    let secret = first["sessionSecret"].as_str().unwrap().to_owned();
+    let room_a = jwt_claims(first["publisherToken"].as_str().unwrap())["video"]["room"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let (s, _) = send(
+        &app,
+        post_json("/api/sessions/cadu/end", json!({"secret": secret})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+
+    // Same URL, new stream -> a DIFFERENT LiveKit room. Viewers admitted to
+    // room A (open connections, unexpired tokens) can't see room B.
+    let (_, second) = send(&app, post_json("/api/sessions", json!({ "name": "cadu" }))).await;
+    let room_b = jwt_claims(second["publisherToken"].as_str().unwrap())["video"]["room"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(room_a, room_b);
+    assert!(room_b.starts_with("cadu-"));
+
+    // Viewer tokens are minted for the NEW room.
+    let pin = second["pin"].as_str().unwrap();
+    let (s, json) = send(
+        &app,
+        post_json("/api/sessions/cadu/token", json!({"pin": pin})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let claims = jwt_claims(json["token"].as_str().unwrap());
+    assert_eq!(claims["video"]["room"], room_b.as_str());
 }
 
 #[tokio::test]

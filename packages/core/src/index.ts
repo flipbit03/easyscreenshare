@@ -6,6 +6,7 @@ export type { ViewerTokenResponse } from "./generated/ViewerTokenResponse";
 
 export {
   createSession,
+  endSession,
   fetchViewerToken,
   kickViewer,
   checkName,

@@ -18,6 +18,9 @@ use crate::{config::Config, AppState, SessionEntry};
 /// Random ids are 12 alphanumeric chars ≈ 71 bits.
 pub const SESSION_ID_LEN: usize = 12;
 const SESSION_SECRET_LEN: usize = 24;
+/// Per-stream room nonce ("{id}-{nonce}"): makes every streaming session a
+/// FRESH LiveKit room even on a reused vanity id.
+const ROOM_NONCE_LEN: usize = 8;
 /// Closed-stream PINs: always this many DIGITS, auto-generated per stream.
 const PIN_LENGTH: u32 = 4;
 /// Wrong-PIN attempts allowed per client per window (brute-force guard).
@@ -62,6 +65,13 @@ pub struct CreateSessionResponse {
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../core/src/generated/")]
 pub struct HeartbeatRequest {
+    pub secret: String,
+}
+
+#[derive(Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../core/src/generated/")]
+pub struct EndSessionRequest {
     pub secret: String,
 }
 
@@ -116,6 +126,21 @@ pub struct NameAvailability {
 
 fn rand_string(len: usize) -> String {
     Alphanumeric.sample_string(&mut rand::rng(), len)
+}
+
+/// Fire-and-forget LiveKit room deletion — disconnects every remaining
+/// participant. Detached on purpose: session-state changes must never block
+/// on (or fail with) LiveKit.
+fn delete_room_detached(cfg: &Config, room: String) {
+    let url = cfg.livekit_internal_url.clone();
+    let key = cfg.livekit_api_key.clone();
+    let secret = cfg.livekit_api_secret.clone();
+    tokio::spawn(async move {
+        let client = RoomClient::with_api_key(&url, &key, &secret);
+        if let Err(e) = client.delete_room(&room).await {
+            tracing::warn!("delete_room({room}) failed: {e}");
+        }
+    });
 }
 
 fn gen_pin() -> String {
@@ -213,9 +238,10 @@ pub async fn create_session(
 
     let secret = rand_string(SESSION_SECRET_LEN);
     let pin = (!public).then(gen_pin);
+    let room = format!("{id}-{}", rand_string(ROOM_NONCE_LEN));
     // Atomic claim: check-and-insert under the lock so two simultaneous
     // requests for the same name can't both win.
-    {
+    let evicted_room = {
         let mut sessions = state.sessions.lock().unwrap();
         if let Some(existing) = sessions.get(&id) {
             if existing.last_seen.elapsed() < SESSION_TTL {
@@ -225,20 +251,29 @@ pub async fn create_session(
                 ));
             }
         }
-        sessions.insert(
-            id.clone(),
-            SessionEntry {
-                last_seen: Instant::now(),
-                secret: secret.clone(),
-                pin: pin.clone(),
-                pin_attempts: HashMap::new(),
-            },
-        );
+        sessions
+            .insert(
+                id.clone(),
+                SessionEntry {
+                    last_seen: Instant::now(),
+                    secret: secret.clone(),
+                    pin: pin.clone(),
+                    pin_attempts: HashMap::new(),
+                    room: room.clone(),
+                },
+            )
+            .map(|stale| stale.room)
+    };
+    // Reclaimed a stale name: tear down its old room so zombie viewers get
+    // disconnected instead of parked forever (the new stream is a different
+    // room either way).
+    if let Some(old_room) = evicted_room {
+        delete_room_detached(&state.cfg, old_room);
     }
 
     let publisher_token = mint_token(
         &state.cfg,
-        &id,
+        &room,
         "publisher",
         "publisher",
         true,
@@ -305,7 +340,7 @@ pub async fn viewer_token(
 ) -> Result<Json<ViewerTokenResponse>, StatusCode> {
     let req = body.map(|b| b.0);
     let display_name = sanitize_display_name(req.as_ref().and_then(|r| r.name.clone()));
-    {
+    let room = {
         let mut sessions = state.sessions.lock().unwrap();
         let entry = match sessions.get_mut(&id) {
             Some(e) if e.last_seen.elapsed() < SESSION_TTL => e,
@@ -331,11 +366,12 @@ pub async fn viewer_token(
                 return Err(StatusCode::FORBIDDEN); // wrong pin
             }
         }
-    }
+        entry.room.clone()
+    };
     let identity = format!("viewer-{}", rand_string(8));
     let token = mint_token(
         &state.cfg,
-        &id,
+        &room,
         &identity,
         &display_name,
         false,
@@ -355,6 +391,7 @@ pub async fn kick(
     Json(body): Json<KickRequest>,
 ) -> Result<Json<KickResponse>, StatusCode> {
     let new_pin;
+    let room;
     {
         let mut sessions = state.sessions.lock().unwrap();
         let entry = match sessions.get_mut(&id) {
@@ -364,6 +401,7 @@ pub async fn kick(
         new_pin = entry.pin.as_ref().map(|_| gen_pin());
         entry.pin = new_pin.clone();
         entry.pin_attempts.clear();
+        room = entry.room.clone();
     }
     // Best effort: drop the live connection via LiveKit's server API. The
     // PIN rotation above holds even if this fails.
@@ -373,7 +411,7 @@ pub async fn kick(
             &state.cfg.livekit_api_key,
             &state.cfg.livekit_api_secret,
         );
-        match client.remove_participant(&id, &body.identity).await {
+        match client.remove_participant(&room, &body.identity).await {
             Ok(()) => true,
             Err(e) => {
                 tracing::warn!("remove_participant failed: {e}");
@@ -385,4 +423,29 @@ pub async fn kick(
         pin: new_pin,
         disconnected,
     }))
+}
+
+/// Explicit end-of-stream, publisher-only via the session secret: frees the
+/// (possibly vanity) id IMMEDIATELY for reclaim and tears the LiveKit room
+/// down, disconnecting every viewer. Admission never outlives the stream —
+/// getting back in takes a fresh page load + the next stream's PIN
+/// (field-hit: a tab left open overnight rejoined the next day's stream
+/// unauthorized).
+pub async fn end_session(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<EndSessionRequest>,
+) -> StatusCode {
+    let room = {
+        let mut sessions = state.sessions.lock().unwrap();
+        match sessions.get(&id) {
+            Some(e) if e.secret == body.secret => sessions.remove(&id).map(|e| e.room),
+            // Wrong/absent secret: don't leak whether the id exists.
+            _ => return StatusCode::FORBIDDEN,
+        }
+    };
+    if let Some(room) = room {
+        delete_room_detached(&state.cfg, room);
+    }
+    StatusCode::NO_CONTENT
 }

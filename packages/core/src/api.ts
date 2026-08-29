@@ -103,6 +103,23 @@ export async function kickViewer(
   return res.json();
 }
 
+/** Explicitly end the session: frees the (possibly vanity) id immediately
+ * for reclaim and tears the LiveKit room down, disconnecting every viewer.
+ * Admission never outlives the stream — rejoining takes a fresh page load
+ * plus the next stream's PIN. Best-effort by design: a crash that skips
+ * this is covered by the heartbeat TTL + stale-room eviction on reclaim. */
+export async function endSession(
+  sessionId: string,
+  secret: string,
+  baseUrl = "",
+): Promise<void> {
+  await fetch(`${baseUrl}/api/sessions/${sessionId}/end`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ secret }),
+  });
+}
+
 /** Read-only availability check for the live name indicator. Never claims. */
 export async function checkName(
   name: string,

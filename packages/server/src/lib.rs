@@ -23,6 +23,10 @@ pub struct SessionEntry {
     pub pin: Option<String>,
     /// Wrong-PIN rate limiting: client key -> (attempts, window start).
     pub pin_attempts: HashMap<String, (u32, Instant)>,
+    /// LiveKit room for THIS streaming session: "{id}-{nonce}". Never the
+    /// bare id — a reused room name would let viewers admitted to a past
+    /// stream (still-open connections, unexpired tokens) into the next one.
+    pub room: String,
 }
 
 pub type Sessions = Mutex<HashMap<String, SessionEntry>>;
@@ -56,6 +60,7 @@ pub fn build_router(cfg: config::Config) -> Router {
         .route("/api/sessions/{id}/heartbeat", post(api::heartbeat))
         .route("/api/sessions/{id}/token", post(api::viewer_token))
         .route("/api/sessions/{id}/kick", post(api::kick))
+        .route("/api/sessions/{id}/end", post(api::end_session))
         .layer(cors)
         .with_state(state)
         .fallback_service(static_svc)

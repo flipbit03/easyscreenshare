@@ -17,7 +17,7 @@ import {
   type LocalTrackPublication,
 } from "livekit-client";
 
-import { startHeartbeat } from "./api";
+import { endSession, startHeartbeat } from "./api";
 
 export type AudioPresetName = "voice" | "balanced" | "music";
 
@@ -275,6 +275,15 @@ export async function startScreenShare(opts: StartOptions): Promise<PublishHandl
       currentVideoTrack.stop();
       currentAudioTrack?.stop();
       await room.disconnect();
+      // Tell the server the stream is over: frees the vanity name instantly
+      // and kicks every viewer out of the room. Best-effort.
+      if (opts.heartbeat) {
+        await endSession(
+          opts.heartbeat.sessionId,
+          opts.heartbeat.secret,
+          opts.heartbeat.baseUrl,
+        ).catch(() => {});
+      }
     },
   };
 }
