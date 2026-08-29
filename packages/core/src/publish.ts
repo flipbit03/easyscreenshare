@@ -13,6 +13,7 @@ import {
   Room,
   ScreenSharePresets,
   Track,
+  TrackEvent,
   type LocalTrackPublication,
 } from "livekit-client";
 
@@ -178,6 +179,18 @@ export async function startScreenShare(opts: StartOptions): Promise<PublishHandl
       forceStereo: true,
       audioPreset: { maxBitrate: AUDIO_PRESETS[opts.audioPreset].maxBitrate },
     });
+    // Loopback capture tracks fire browser-level `mute` events when the
+    // source goes quiet; LiveKit reacts by pausing the upstream
+    // (replaceTrack(null)) AND signaling MUTED to viewers — identical to
+    // the sharer pressing "Mute audio", with nobody pressing anything
+    // (field-hit: a viewer's unmute during such a window plays nothing).
+    // For a screen share, silence IS content — keep the upstream alive.
+    const localAudio = audioPub.track;
+    if (localAudio && "resumeUpstream" in localAudio) {
+      localAudio.on(TrackEvent.UpstreamPaused, () => {
+        void localAudio.resumeUpstream();
+      });
+    }
   }
 
   const stopHeartbeat = opts.heartbeat
