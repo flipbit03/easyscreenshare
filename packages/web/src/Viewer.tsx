@@ -42,12 +42,16 @@ const QUALITY_MAP: Record<Exclude<QualityChoice, "auto">, VideoQuality> = {
 const JITTER_BUFFER_MS = 1000;
 
 function setJitterBufferTarget(track: RemoteTrack) {
+  // Chrome-only extensions, so loosely typed. Feature-detect by reading:
+  // supported browsers expose jitterBufferTarget as null by default, absent
+  // means unsupported. (An `in` check narrows the else-branch to never
+  // under tsc -b, which is what the Docker build runs.)
   const recv = track.receiver as
-    | (RTCRtpReceiver & { jitterBufferTarget?: number; playoutDelayHint?: number })
+    | { jitterBufferTarget?: number | null; playoutDelayHint?: number | null }
     | undefined;
   if (!recv) return;
   try {
-    if ("jitterBufferTarget" in recv) {
+    if (recv.jitterBufferTarget !== undefined) {
       recv.jitterBufferTarget = JITTER_BUFFER_MS; // spec: milliseconds
     } else {
       recv.playoutDelayHint = JITTER_BUFFER_MS / 1000; // legacy hint: seconds
