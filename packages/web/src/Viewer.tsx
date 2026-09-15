@@ -33,34 +33,6 @@ const QUALITY_MAP: Record<Exclude<QualityChoice, "auto">, VideoQuality> = {
   low: VideoQuality.LOW,
 };
 
-/** Receiver-side playout buffer. WebRTC's default jitter buffer is a few
- * tens of ms and reacts to any late frame with a visible hiccup — field
- * report: stutters even on great connections. One second of latency is a
- * fine trade for smoothness in a watch-my-screen app. Applied to BOTH
- * receivers: audio and video are separate elements here, so they must be
- * delayed equally or audio would lead. */
-const JITTER_BUFFER_MS = 1000;
-
-function setJitterBufferTarget(track: RemoteTrack) {
-  // Chrome-only extensions, so loosely typed. Feature-detect by reading:
-  // supported browsers expose jitterBufferTarget as null by default, absent
-  // means unsupported. (An `in` check narrows the else-branch to never
-  // under tsc -b, which is what the Docker build runs.)
-  const recv = track.receiver as
-    | { jitterBufferTarget?: number | null; playoutDelayHint?: number | null }
-    | undefined;
-  if (!recv) return;
-  try {
-    if (recv.jitterBufferTarget !== undefined) {
-      recv.jitterBufferTarget = JITTER_BUFFER_MS; // spec: milliseconds
-    } else {
-      recv.playoutDelayHint = JITTER_BUFFER_MS / 1000; // legacy hint: seconds
-    }
-  } catch {
-    // A buffering hint must never break playback.
-  }
-}
-
 export default function Viewer({ sessionId }: { sessionId: string }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -135,7 +107,6 @@ export default function Viewer({ sessionId }: { sessionId: string }) {
 
     room
       .on(RoomEvent.TrackSubscribed, (track: RemoteTrack, pub) => {
-        setJitterBufferTarget(track);
         if (track.kind === Track.Kind.Video) {
           videoPubRef.current = pub;
           if (videoRef.current) track.attach(videoRef.current);
