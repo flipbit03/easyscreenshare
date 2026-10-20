@@ -117,9 +117,12 @@ Publisher (Electron or Chromium browser)
 
 ## Deployment (v0, on outpost)
 
-Follows the 2048wars pattern exactly (Ansible shapes machine, app repo owns ~user):
+Follows the 2048wars pattern exactly (my_infra shapes the machine, app repo owns ~user):
 
-- Ansible (my_infra): `easyscreenshare` user (docker group) + deploy key + Caddy vhosts.
+- my_infra's Rustible playbook `outpost/easyscreenshare` (`rustible playbook run
+  outpost/easyscreenshare` from `my_infra/rustible`): `easyscreenshare` user
+  (docker group) + deploy key + Caddy vhosts. DNS and the Vultr firewall are
+  my_infra's Terraform (`iac/vultr`).
 - Caddy: `easyscreenshare.flipbit03.com` → API/web (localhost port); `lk.easyscreenshare.flipbit03.com` →
   LiveKit signaling :7880 (WebSocket — Caddy handles natively).
 - Exposed directly (not via Caddy): UDP 7882 (muxed media), TCP 7881 (ICE/TCP
