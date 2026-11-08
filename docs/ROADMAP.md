@@ -38,7 +38,7 @@
   - Web publisher → local LiveKit → viewer with custom encodings incl. `maxFramerate: 60` at 1080p/native; measure delivered fps at the viewer (`getStats`).
   - **Accept:** documented delivered-fps table (capture fps vs per-layer received fps); go/no-go on advertising a 60 fps tier; findings appended to research 01.
   - **Guards:** measure with `getStats`, not `track.getSettings()` (02 §3); test with real motion on screen.
-- [ ] **S3 Linux loopback without the feature flag** *(needs a REAL Linux desktop — NOT WSL)*
+- [ ] **S3 Linux loopback without the feature flag** *(needs a REAL Linux desktop — NOT WSL)* *(PipeWire half verified 2026-11-08 on real hardware — Nobara/Fedora 44, PipeWire 1.6.9 via pipewire-pulse, KDE Wayland, Electron 44.0.0: track granted (`deviceId: loopback`, 2ch/48k, processing off), Chromium attaches to the default sink's `.monitor`, peak RMS 0.216 while a tone played, NO flag set. Desktop now arms `loopback` on Linux. Pending for tick: pure-Pulse, and the research 04 §10 write-up)*
   - Electron `audio: 'loopback'` with NO `PulseaudioLoopbackForScreenShare` flag.
   - Target: a desktop-Linux VM (Ubuntu/Fedora Workstation, e.g. on the Proxmox box —
     QEMU's emulated audio gives a real default sink) or real hardware. WSLg is
