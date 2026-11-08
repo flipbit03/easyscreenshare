@@ -9,6 +9,10 @@
 //     apps appearing mid-stream get wired into the live graph. Chromium has
 //     NO exclude-arbitrary-app device id (verified against Chromium source),
 //     so exclusion-by-mixing is the zero-native path.
+//   - Linux → PipeWire router (linuxAudio.ts): app streams are pw-linked into
+//     a private virtual source; muted apps simply aren't linked, "only this
+//     app" links one. Falls back to whole-system loopback if pactl/pw-link
+//     are unavailable.
 import {
   app,
   BrowserWindow,
@@ -25,6 +29,7 @@ import {
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { PipeWireRouter, SOURCE_LABEL, listStreamApps } from "./linuxAudio";
 
 declare const PICKER_VITE_DEV_SERVER_URL: string | undefined;
 declare const PICKER_VITE_NAME: string;
@@ -124,6 +129,12 @@ function main() {
   let failedCaptures: string[] = [];
   /** Already ballooned this share — warn once per app, not per poll. */
   const balloonedFailures = new Set<string>();
+  /** Linux per-app routing; null elsewhere. */
+  const router = process.platform === "linux" ? new PipeWireRouter() : null;
+  /** Linux: stream ONLY this app (null = all apps minus exclusions). */
+  let audioOnlyApp: string | null = null;
+  const wantsApp = (name: string) =>
+    audioOnlyApp ? name === audioOnlyApp : !settings.excludedApps.includes(name);
 
   const ago = (ts: number): string => {
     const m = Math.floor(Math.max(0, Date.now() - ts) / 60000);
@@ -262,6 +273,9 @@ function main() {
     roots: AudioRoot[];
     excludedApps: string[];
     audioScope: AudioScope;
+    /** Linux router: capture this input device (by label) via getUserMedia. */
+    linuxSource?: string;
+    onlyApp?: string | null;
   }> => {
     mixerActive = false;
     appTarget = null;
@@ -273,8 +287,28 @@ function main() {
       baseAudio = undefined;
       return { mixer: false, roots: [], excludedApps: [], audioScope: "none" };
     }
+    if (router) {
+      try {
+        // Filter FIRST: start() links on its first sync, and a default
+        // "everything" filter would let excluded apps (Discord) in.
+        router.setFilter(wantsApp);
+        await router.start(); // no-op when already running (source switch)
+        baseAudio = undefined; // the router's source supplies the track
+        return {
+          mixer: false,
+          roots: [],
+          excludedApps: settings.excludedApps,
+          audioScope: audioOnlyApp ? "app" : "mixer",
+          linuxSource: SOURCE_LABEL,
+          onlyApp: audioOnlyApp,
+        };
+      } catch (e) {
+        console.error("pipewire router unavailable, using system loopback:", e);
+        router.stop();
+      }
+    }
     if (process.platform !== "win32") {
-      // Linux: Chromium taps the default sink's monitor via PulseAudio
+      // Linux fallback: Chromium taps the default sink's monitor via PulseAudio
       // (pipewire-pulse) — whole-system audio, no per-app selectivity. Works
       // WITHOUT --enable-features=PulseaudioLoopbackForScreenShare (that flag
       // only gates Chrome's picker checkbox): S3 verified on Fedora 44 /
@@ -399,6 +433,28 @@ function main() {
     saveSettings();
     if (live && mixerActive)
       win?.webContents.send("audio:exclude-set", settings.excludedApps);
+    if (router?.running) router.setFilter(wantsApp);
+    updateTray();
+  };
+
+  /** Linux, live: switch between "all apps" and "only one app" instantly. */
+  const audioSourceItems = (): Electron.MenuItemConstructorOptions[] => [
+    {
+      label: "All apps (except muted)",
+      type: "radio",
+      checked: audioOnlyApp == null,
+      click: () => setOnlyApp(null),
+    },
+    ...lastRoots.map((r) => ({
+      label: `Only ${r.name}`,
+      type: "radio" as const,
+      checked: audioOnlyApp === r.name,
+      click: () => setOnlyApp(r.name),
+    })),
+  ];
+  const setOnlyApp = (name: string | null) => {
+    audioOnlyApp = name;
+    router?.setFilter(wantsApp);
     updateTray();
   };
 
@@ -454,8 +510,16 @@ function main() {
       })),
     },
     {
+      label: "Stream audio from",
+      visible: live && !!router?.running,
+      submenu: audioSourceItems(),
+    },
+    {
       label: "Audio exclusions",
-      visible: process.platform === "win32",
+      visible:
+        process.platform === "win32" ||
+        (process.platform === "linux" && (!live || !!router?.running)),
+      enabled: audioOnlyApp == null, // "only X" ignores exclusions
       submenu: exclusionItems(),
     },
     {
@@ -591,7 +655,10 @@ function main() {
 
   const quit = () => {
     if (live) requestStop();
-    setTimeout(() => app.exit(0), 400);
+    setTimeout(() => {
+      router?.stop(); // after the renderer stopped its capture track
+      app.exit(0);
+    }, 400);
   };
 
   const openPicker = () => {
@@ -654,8 +721,13 @@ function main() {
 
   ipcMain.handle(
     "picker:choose",
-    async (_e, source: { id: string; name: string; isScreen: boolean }) => {
+    async (
+      _e,
+      source: { id: string; name: string; isScreen: boolean },
+      onlyApp?: string | null,
+    ) => {
       chosenSource = source;
+      if (onlyApp !== undefined) audioOnlyApp = onlyApp;
       return armForChoice();
     },
   );
@@ -670,7 +742,18 @@ function main() {
   ipcMain.handle("audio:loopback", () => {
     baseAudio = "loopback";
     mixerActive = false;
+    router?.stop();
   });
+
+  ipcMain.on("audio:release", () => {
+    router?.stop();
+    audioOnlyApp = null;
+  });
+
+  /** Linux: apps currently playing audio, for the picker's source menu. */
+  ipcMain.handle("audio:apps", async () =>
+    router ? (await listStreamApps()).map((a) => a.name) : [],
+  );
 
   ipcMain.on("audio:capture-failed", (_e, names: string[]) => {
     failedCaptures = names;
@@ -762,12 +845,32 @@ function main() {
     audioMuted = false;
     failedCaptures = [];
     balloonedFailures.clear();
+    // The renderer stopped its capture before reporting: unloading the
+    // source now can't make Chromium fail over to another input (the mic).
+    router?.stop();
+    audioOnlyApp = null;
+    lastRoots = [];
     stopPolling();
     updateTray();
     win?.close();
   });
 
   app.on("second-instance", () => openPicker());
+
+  if (router) {
+    router.onApps = (apps) => {
+      const names = apps.map((a) => a.name);
+      if (names.join() === lastRoots.map((r) => r.name).join()) return;
+      lastRoots = names.map((name) => ({ pid: 0, name }));
+      updateTray(); // mute / "only" lists follow the live app set
+    };
+    for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+      process.on(sig, () => {
+        router.stop();
+        app.exit(0);
+      });
+    }
+  }
 
   void app.whenReady().then(() => {
     session.defaultSession.setDisplayMediaRequestHandler((_request, callback) => {

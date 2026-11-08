@@ -22,6 +22,10 @@ export interface ArmResult {
   excludedApps: string[];
   /** What the stream audio contains: per-app mix, one app, whole system, or none. */
   audioScope: "none" | "system" | "app" | "mixer";
+  /** Linux router: input device label to capture with getUserMedia. */
+  linuxSource?: string;
+  /** Linux router: the single app being streamed, if any. */
+  onlyApp?: string | null;
 }
 
 const api = {
@@ -30,11 +34,13 @@ const api = {
   platform: (): Promise<{ platform: string; wayland: boolean }> =>
     ipcRenderer.invoke("app:platform"),
   listSources: (): Promise<SourceInfo[]> => ipcRenderer.invoke("picker:list"),
-  chooseSource: (source: {
-    id: string;
-    name: string;
-    isScreen: boolean;
-  }): Promise<ArmResult> => ipcRenderer.invoke("picker:choose", source),
+  /** onlyApp (Linux): stream just this app; null = all apps; omitted = keep. */
+  chooseSource: (
+    source: { id: string; name: string; isScreen: boolean },
+    onlyApp?: string | null,
+  ): Promise<ArmResult> => ipcRenderer.invoke("picker:choose", source, onlyApp),
+  /** Linux: apps currently playing audio (normalized names). */
+  streamApps: (): Promise<string[]> => ipcRenderer.invoke("audio:apps"),
   armAudio: (pid: number): Promise<void> => ipcRenderer.invoke("audio:arm", pid),
   /** Mixer came up empty — re-arm the main capture for full system loopback. */
   armSystemLoopback: (): Promise<void> => ipcRenderer.invoke("audio:loopback"),
@@ -53,6 +59,8 @@ const api = {
   notifyLive: (info: { shareUrl: string; pin: string | null; hasAudio: boolean }) =>
     ipcRenderer.send("share:live", info),
   notifyStopped: () => ipcRenderer.send("share:stopped"),
+  /** A share failed to start: drop any audio routing set up for it. */
+  releaseAudio: () => ipcRenderer.send("audio:release"),
   hidePicker: () => ipcRenderer.send("picker:hide"),
   updateViewers: (
     rows: { identity: string; name: string; conn: string; joinedAt: number }[],

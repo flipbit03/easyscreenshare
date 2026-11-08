@@ -50,6 +50,28 @@ const AUDIO_SUB: Record<ArmResult["audioScope"], string> = {
   mixer: "Audio: apps mixed",
 };
 
+/** Linux: picker's "stream audio from" choice for the next share. */
+let onlyApp: string | null = null;
+
+/** Linux: open the router's virtual source by label. Labels need no prior
+ * mic grant in Electron (permission checks default to allow); the device can
+ * take a moment to show up after the module loads, so retry briefly. */
+async function captureLinuxSource(label: string): Promise<MediaStreamTrack> {
+  for (let i = 0; i < 10; i++) {
+    const dev = (await navigator.mediaDevices.enumerateDevices()).find(
+      (d) => d.kind === "audioinput" && d.label.includes(label),
+    );
+    if (dev) {
+      const s = await navigator.mediaDevices.getUserMedia({
+        audio: { ...SYSTEM_AUDIO_CONSTRAINTS, deviceId: { exact: dev.deviceId } },
+      });
+      return s.getAudioTracks()[0];
+    }
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  throw new Error(`audio device "${label}" not found`);
+}
+
 function h<K extends keyof HTMLElementTagNameMap>(
   tag: K,
   cls?: string,
@@ -75,7 +97,9 @@ async function renderPicker(mode: "start" | "switch" = "start") {
       "sub",
       platform === "win32"
         ? "A screen streams per-app mixed audio (Discord muted by default) — a window streams only that app's audio."
-        : "Audio is everything your computer plays (including voice chat).",
+        : platform === "linux"
+          ? "Streams every app's audio except muted ones (Discord muted by default) — or just one app. Change it live from the tray."
+          : "Audio is everything your computer plays (including voice chat).",
     ),
   );
   app.append(head);
@@ -130,6 +154,27 @@ async function renderPicker(mode: "start" | "switch" = "start") {
     );
     audioRow.append(audioCb, h("span", undefined, "Share audio"));
     app.append(audioRow);
+
+    if (platform === "linux") {
+      // Only apps holding an audio stream right now are listed; anything
+      // that starts later can be picked live from the tray.
+      const row = h("label", "audio-row");
+      const sel = h("select", "audio-select") as HTMLSelectElement;
+      const opt = (value: string, text: string) => {
+        const o = h("option", undefined, text) as HTMLOptionElement;
+        o.value = value;
+        return o;
+      };
+      sel.append(opt("", "All apps (except muted)"));
+      for (const a of await window.ess.streamApps()) sel.append(opt(a, `Only ${a}`));
+      sel.value = onlyApp ?? "";
+      if (sel.value !== (onlyApp ?? "")) onlyApp = null; // app went away
+      sel.addEventListener("change", () => (onlyApp = sel.value || null));
+      sel.disabled = !audioCb.checked;
+      audioCb.addEventListener("change", () => (sel.disabled = !audioCb.checked));
+      row.append(h("span", undefined, "Audio from"), sel);
+      app.append(row);
+    }
   }
 
   const grid = h("div", "grid");
@@ -224,23 +269,40 @@ async function buildAudio(
     const muted = armed.excludedApps.length ? " — Discord muted" : "";
     return { track: mixer.track, sub: `Audio: ${ok} apps mixed${muted}` };
   }
+  if (armed.linuxSource) {
+    try {
+      const track = await captureLinuxSource(armed.linuxSource);
+      const discord = armed.excludedApps.includes("discord") ? " — Discord muted" : "";
+      return {
+        track,
+        sub: armed.onlyApp
+          ? `Audio: only ${armed.onlyApp}`
+          : `Audio: all apps except muted${discord}`,
+      };
+    } catch (e) {
+      console.error("per-app audio unavailable:", e);
+      await window.ess.armSystemLoopback(); // whole system beats silence
+      return { sub: "Audio: everything your computer plays (per-app unavailable)" };
+    }
+  }
   // Window / system loopback: the video capture itself carries the audio.
   return { sub: AUDIO_SUB[armed.audioScope] };
 }
 
 async function startShare(source: SourceInfo) {
   renderStatus("Starting…");
+  let audioTrack: MediaStreamTrack | undefined;
   try {
-    const armed = await window.ess.chooseSource({
-      id: source.id,
-      name: source.name,
-      isScreen: source.isScreen,
-    });
+    const armed = await window.ess.chooseSource(
+      { id: source.id, name: source.name, isScreen: source.isScreen },
+      onlyApp,
+    );
     const settings = await window.ess.getSettings();
     if (armed.mixer) renderStatus("Starting…", false, "capturing app audio…");
     const audio = settings.shareAudio
       ? await buildAudio(armed)
       : { track: undefined, sub: "Audio: off" };
+    audioTrack = audio.track;
 
     const sess = await createSession(
       { name: vanityName.trim() || undefined, public: settings.publicStream },
@@ -280,6 +342,10 @@ async function startShare(source: SourceInfo) {
     mixer?.stop();
     mixer = null;
     handle = null;
+    // Not live: stop our capture FIRST, then release the router's source —
+    // the other order makes Chromium fail over to another input (the mic).
+    audioTrack?.stop();
+    window.ess.releaseAudio();
     if (isCancel(e)) return void renderPicker();
     if (e instanceof NameTakenError) {
       renderStatus(`"${vanityName}" is in use right now — pick another name.`, true);
@@ -306,7 +372,7 @@ async function switchSource(source: SourceInfo) {
     const stream = await navigator.mediaDevices.getDisplayMedia({
       video: true,
       audio:
-        armed.mixer || !settings.shareAudio
+        armed.mixer || armed.linuxSource || !settings.shareAudio
           ? false
           : SYSTEM_AUDIO_CONSTRAINTS,
     } as DisplayMediaStreamOptions);

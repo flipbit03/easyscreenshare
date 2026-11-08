@@ -192,3 +192,17 @@ body {
   background: var(--accent);
   filter: brightness(1.1);
 }
+
+/* Linux: "Audio from" selector */
+.audio-select {
+  margin-left: 0.6rem;
+  font: inherit;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.3rem 0.5rem;
+}
+.audio-select:disabled {
+  opacity: 0.5;
+}
