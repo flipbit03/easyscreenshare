@@ -46,6 +46,18 @@ const SHELL_HOSTS = new Set([
   "dwm",
 ]);
 
+/** Wayland capture goes through xdg-desktop-portal, which owns the picker:
+ * we can't enumerate sources ourselves, so the portal dialog replaces our grid
+ * (research 02). Branch on the session type, not on the platform — X11 Linux
+ * enumerates like Windows. An explicit --ozone-platform=x11 run is XWayland. */
+const IS_WAYLAND =
+  process.platform === "linux" &&
+  (process.env.XDG_SESSION_TYPE === "wayland" || !!process.env.WAYLAND_DISPLAY) &&
+  app.commandLine.getSwitchValue("ozone-platform") !== "x11";
+
+/** What the stream's audio will contain, for the picker's status line. */
+type AudioScope = "none" | "system" | "app" | "mixer";
+
 type AudioPresetName = "voice" | "balanced" | "music";
 type VideoModeName = "motion" | "text";
 
@@ -249,6 +261,7 @@ function main() {
     mixer: boolean;
     roots: AudioRoot[];
     excludedApps: string[];
+    audioScope: AudioScope;
   }> => {
     mixerActive = false;
     appTarget = null;
@@ -258,31 +271,37 @@ function main() {
     if (!settings.shareAudio) {
       // Audio off for this share: no loopback, no mixer, no enumeration.
       baseAudio = undefined;
-      return { mixer: false, roots: [], excludedApps: [] };
-    }
-    if (process.platform === "linux") {
-      baseAudio = undefined; // tier 2: no loopback arming (research 04)
-      return { mixer: false, roots: [], excludedApps: [] };
+      return { mixer: false, roots: [], excludedApps: [], audioScope: "none" };
     }
     if (process.platform !== "win32") {
+      // Linux: Chromium taps the default sink's monitor via PulseAudio
+      // (pipewire-pulse) — whole-system audio, no per-app selectivity. Works
+      // WITHOUT --enable-features=PulseaudioLoopbackForScreenShare (that flag
+      // only gates Chrome's picker checkbox): S3 verified on Fedora 44 /
+      // PipeWire 1.6 / KDE Wayland. macOS: CoreAudio tap.
       baseAudio = "loopback";
-      return { mixer: false, roots: [], excludedApps: [] };
+      return { mixer: false, roots: [], excludedApps: [], audioScope: "system" };
     }
     if (chosenSource && !chosenSource.isScreen) {
       // Window share → single include-mode capture (S1 CONFIRMED).
       appTarget = await windowProcessByTitle(chosenSource.name);
       if (appTarget) {
         baseAudio = { id: `applicationLoopback:${appTarget.pid}`, name: "App audio" };
-        return { mixer: false, roots: [], excludedApps: [] };
+        return { mixer: false, roots: [], excludedApps: [], audioScope: "app" };
       }
       baseAudio = "loopback";
-      return { mixer: false, roots: [], excludedApps: [] };
+      return { mixer: false, roots: [], excludedApps: [], audioScope: "system" };
     }
     // Screen share → per-app mixer.
     baseAudio = undefined; // mixer supplies the track; main gDM is video-only
     lastRoots = await listAudioRoots();
     mixerActive = true;
-    return { mixer: true, roots: lastRoots, excludedApps: settings.excludedApps };
+    return {
+      mixer: true,
+      roots: lastRoots,
+      excludedApps: settings.excludedApps,
+      audioScope: "mixer",
+    };
   };
 
   /** Real input event so follow-up getDisplayMedia calls carry activation. */
@@ -614,6 +633,9 @@ function main() {
 
   // ---------- IPC ----------
   ipcMain.handle("picker:list", async () => {
+    // On Wayland getSources() would pop the portal dialog right here, before
+    // the user has seen the picker; the renderer shows one button instead.
+    if (IS_WAYLAND) return [];
     const sources = await desktopCapturer.getSources({
       types: ["screen", "window"],
       thumbnailSize: { width: 360, height: 202 },
@@ -692,6 +714,11 @@ function main() {
 
   ipcMain.handle("app:server-url", () => SERVER_URL);
 
+  ipcMain.handle("app:platform", () => ({
+    platform: process.platform,
+    wayland: IS_WAYLAND,
+  }));
+
   ipcMain.on("picker:hide", () => win?.hide());
 
   ipcMain.on("settings:share-audio", (_e, v: boolean) => {
@@ -757,6 +784,32 @@ function main() {
           video: { id: chosenSource.id, name: chosenSource.name },
           audio: { id: `applicationLoopback:${pid}`, name: "App audio" },
         } as unknown as Parameters<typeof callback>[0]);
+        return;
+      }
+      if (IS_WAYLAND) {
+        // The portal dialog IS the picker: getSources() shows it and returns
+        // exactly the one source the user chose (empty on cancel).
+        const audio = baseAudio;
+        desktopCapturer
+          .getSources({ types: ["screen", "window"] })
+          .then((sources) => {
+            const src = sources[0];
+            if (!src) return callback({} as Parameters<typeof callback>[0]);
+            chosenSource = {
+              id: src.id,
+              name: src.name,
+              isScreen: src.id.startsWith("screen:"),
+            };
+            const grant: Record<string, unknown> = {
+              video: { id: src.id, name: src.name },
+            };
+            if (audio) grant.audio = audio;
+            callback(grant as unknown as Parameters<typeof callback>[0]);
+          })
+          .catch((e) => {
+            console.error("portal capture failed:", e);
+            callback({} as Parameters<typeof callback>[0]);
+          });
         return;
       }
       // NEVER pass an `audio` key with an undefined value: Electron treats the
