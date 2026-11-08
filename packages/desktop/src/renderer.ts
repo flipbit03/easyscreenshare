@@ -27,6 +27,28 @@ let vanityName = localStorage.getItem(NAME_KEY) ?? "";
 let session: { id: string; secret: string } | null = null;
 let serverUrl = "";
 void window.ess.serverUrl().then((u) => (serverUrl = u));
+const platformInfo = window.ess.platform();
+
+/** Stand-in source on Wayland: main swaps in the portal's real pick. */
+const PORTAL_SOURCE: SourceInfo = {
+  id: "portal",
+  name: "Screen or window",
+  isScreen: true,
+  thumbnail: null,
+  appIcon: null,
+};
+
+/** The portal dialog was dismissed — not an error worth a red screen. */
+const isCancel = (e: unknown) =>
+  e instanceof DOMException &&
+  (e.name === "NotAllowedError" || e.name === "AbortError");
+
+const AUDIO_SUB: Record<ArmResult["audioScope"], string> = {
+  none: "Audio: off",
+  system: "Audio: everything your computer plays",
+  app: "Audio: this app only",
+  mixer: "Audio: apps mixed",
+};
 
 function h<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -41,6 +63,7 @@ function h<K extends keyof HTMLElementTagNameMap>(
 
 /** mode "start" begins a new share; "switch" swaps the source of the live one. */
 async function renderPicker(mode: "start" | "switch" = "start") {
+  const { platform, wayland } = await platformInfo;
   app.replaceChildren();
   const head = h("header", "head");
   head.append(
@@ -50,7 +73,9 @@ async function renderPicker(mode: "start" | "switch" = "start") {
     h(
       "p",
       "sub",
-      "A screen streams per-app mixed audio (Discord muted by default) — a window streams only that app's audio.",
+      platform === "win32"
+        ? "A screen streams per-app mixed audio (Discord muted by default) — a window streams only that app's audio."
+        : "Audio is everything your computer plays (including voice chat).",
     ),
   );
   app.append(head);
@@ -110,6 +135,19 @@ async function renderPicker(mode: "start" | "switch" = "start") {
   const grid = h("div", "grid");
   app.append(grid);
 
+  if (wayland) {
+    // xdg-desktop-portal owns source selection on Wayland: one button that
+    // opens the system dialog (KDE/GNOME draw it, not us).
+    const go = h("button", "retry portal-btn", "Choose screen or window…");
+    go.addEventListener("click", () =>
+      void (mode === "switch"
+        ? switchSource(PORTAL_SOURCE)
+        : startShare(PORTAL_SOURCE)),
+    );
+    grid.append(go);
+    return;
+  }
+
   const sources = await window.ess.listSources();
   if (sources.length === 0) {
     grid.append(h("p", "empty", "No capturable sources found."));
@@ -164,10 +202,9 @@ function renderStatus(text: string, isError = false, sub?: string) {
   app.append(box);
 }
 
-/** Build the audio track for a source per its arm plan. Manages `mixer` and
+/** Build the audio track per the arm plan. Manages `mixer` and
  * returns { track (undefined = let the video capture supply app audio), sub }. */
 async function buildAudio(
-  source: SourceInfo,
   armed: ArmResult,
 ): Promise<{ track?: MediaStreamTrack; sub: string }> {
   mixer?.stop();
@@ -187,8 +224,8 @@ async function buildAudio(
     const muted = armed.excludedApps.length ? " — Discord muted" : "";
     return { track: mixer.track, sub: `Audio: ${ok} apps mixed${muted}` };
   }
-  // Window / fallback: the video capture itself carries the app's audio.
-  return { sub: source.isScreen ? "Audio: system" : "Audio: this app only" };
+  // Window / system loopback: the video capture itself carries the audio.
+  return { sub: AUDIO_SUB[armed.audioScope] };
 }
 
 async function startShare(source: SourceInfo) {
@@ -202,7 +239,7 @@ async function startShare(source: SourceInfo) {
     const settings = await window.ess.getSettings();
     if (armed.mixer) renderStatus("Starting…", false, "capturing app audio…");
     const audio = settings.shareAudio
-      ? await buildAudio(source, armed)
+      ? await buildAudio(armed)
       : { track: undefined, sub: "Audio: off" };
 
     const sess = await createSession(
@@ -243,6 +280,7 @@ async function startShare(source: SourceInfo) {
     mixer?.stop();
     mixer = null;
     handle = null;
+    if (isCancel(e)) return void renderPicker();
     if (e instanceof NameTakenError) {
       renderStatus(`"${vanityName}" is in use right now — pick another name.`, true);
     } else {
@@ -263,17 +301,19 @@ async function switchSource(source: SourceInfo) {
     });
     // New video (+ app audio when it's a window share) from the new source.
     const settings = await window.ess.getSettings();
+    // Audio rides on the capture unless the per-app mixer supplies it
+    // (window shares on Windows, system loopback on Linux/macOS).
     const stream = await navigator.mediaDevices.getDisplayMedia({
       video: true,
       audio:
-        source.isScreen || !settings.shareAudio
+        armed.mixer || !settings.shareAudio
           ? false
           : SYSTEM_AUDIO_CONSTRAINTS,
     } as DisplayMediaStreamOptions);
     const newVideo = stream.getVideoTracks()[0];
     if (newVideo) await handle.replaceVideoTrack(newVideo);
 
-    const audio = await buildAudio(source, armed);
+    const audio = await buildAudio(armed);
     if (audio.track) {
       await handle.replaceAudioTrack(audio.track);
     } else {
@@ -282,6 +322,7 @@ async function switchSource(source: SourceInfo) {
     }
     window.ess.hidePicker();
   } catch (e) {
+    if (isCancel(e)) return void window.ess.hidePicker(); // keep the old source
     renderStatus(e instanceof Error ? e.message : String(e), true);
   }
 }

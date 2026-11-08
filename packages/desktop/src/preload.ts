@@ -20,10 +20,15 @@ export interface ArmResult {
   mixer: boolean;
   roots: AudioRoot[];
   excludedApps: string[];
+  /** What the stream audio contains: per-app mix, one app, whole system, or none. */
+  audioScope: "none" | "system" | "app" | "mixer";
 }
 
 const api = {
   serverUrl: (): Promise<string> => ipcRenderer.invoke("app:server-url"),
+  /** Wayland = the xdg-desktop-portal dialog replaces our source grid. */
+  platform: (): Promise<{ platform: string; wayland: boolean }> =>
+    ipcRenderer.invoke("app:platform"),
   listSources: (): Promise<SourceInfo[]> => ipcRenderer.invoke("picker:list"),
   chooseSource: (source: {
     id: string;

@@ -178,3 +178,17 @@ body {
 .audio-row input {
   accent-color: var(--accent);
 }
+
+/* Wayland: the portal dialog replaces the source grid */
+.portal-btn {
+  margin-top: 0.5rem;
+  padding: 0.9rem 1.6rem;
+  font-weight: 600;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.portal-btn:hover {
+  background: var(--accent);
+  filter: brightness(1.1);
+}
