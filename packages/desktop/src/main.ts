@@ -9,6 +9,10 @@
 //     apps appearing mid-stream get wired into the live graph. Chromium has
 //     NO exclude-arbitrary-app device id (verified against Chromium source),
 //     so exclusion-by-mixing is the zero-native path.
+//   - Linux → PipeWire router (linuxAudio.ts): app streams are pw-linked into
+//     a private virtual source; muted apps simply aren't linked, "only this
+//     app" links one. Falls back to whole-system loopback if pactl/pw-link
+//     are unavailable.
 import {
   app,
   BrowserWindow,
@@ -25,6 +29,7 @@ import {
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { PipeWireRouter, SOURCE_LABEL, listStreamApps } from "./linuxAudio";
 
 declare const PICKER_VITE_DEV_SERVER_URL: string | undefined;
 declare const PICKER_VITE_NAME: string;
@@ -45,6 +50,18 @@ const SHELL_HOSTS = new Set([
   "taskhostw",
   "dwm",
 ]);
+
+/** Wayland capture goes through xdg-desktop-portal, which owns the picker:
+ * we can't enumerate sources ourselves, so the portal dialog replaces our grid
+ * (research 02). Branch on the session type, not on the platform — X11 Linux
+ * enumerates like Windows. An explicit --ozone-platform=x11 run is XWayland. */
+const IS_WAYLAND =
+  process.platform === "linux" &&
+  (process.env.XDG_SESSION_TYPE === "wayland" || !!process.env.WAYLAND_DISPLAY) &&
+  app.commandLine.getSwitchValue("ozone-platform") !== "x11";
+
+/** What the stream's audio will contain, for the picker's status line. */
+type AudioScope = "none" | "system" | "app" | "mixer";
 
 type AudioPresetName = "voice" | "balanced" | "music";
 type VideoModeName = "motion" | "text";
@@ -112,6 +129,16 @@ function main() {
   let failedCaptures: string[] = [];
   /** Already ballooned this share — warn once per app, not per poll. */
   const balloonedFailures = new Set<string>();
+  /** Linux per-app routing; null elsewhere. */
+  const router = process.platform === "linux" ? new PipeWireRouter() : null;
+  /** False when no tray icon is actually visible (no tray host, or Plasma
+   * dropping Electron 44's SNI registration): the window is then the only
+   * control surface, so it stays up while live instead of hiding. */
+  let trayVisible = process.platform !== "linux";
+  /** Linux: stream ONLY this app (null = all apps minus exclusions). */
+  let audioOnlyApp: string | null = null;
+  const wantsApp = (name: string) =>
+    audioOnlyApp ? name === audioOnlyApp : !settings.excludedApps.includes(name);
 
   const ago = (ts: number): string => {
     const m = Math.floor(Math.max(0, Date.now() - ts) / 60000);
@@ -249,6 +276,10 @@ function main() {
     mixer: boolean;
     roots: AudioRoot[];
     excludedApps: string[];
+    audioScope: AudioScope;
+    /** Linux router: capture this input device (by label) via getUserMedia. */
+    linuxSource?: string;
+    onlyApp?: string | null;
   }> => {
     mixerActive = false;
     appTarget = null;
@@ -258,31 +289,57 @@ function main() {
     if (!settings.shareAudio) {
       // Audio off for this share: no loopback, no mixer, no enumeration.
       baseAudio = undefined;
-      return { mixer: false, roots: [], excludedApps: [] };
+      return { mixer: false, roots: [], excludedApps: [], audioScope: "none" };
     }
-    if (process.platform === "linux") {
-      baseAudio = undefined; // tier 2: no loopback arming (research 04)
-      return { mixer: false, roots: [], excludedApps: [] };
+    if (router) {
+      try {
+        // Filter FIRST: start() links on its first sync, and a default
+        // "everything" filter would let excluded apps (Discord) in.
+        router.setFilter(wantsApp);
+        await router.start(); // no-op when already running (source switch)
+        baseAudio = undefined; // the router's source supplies the track
+        return {
+          mixer: false,
+          roots: [],
+          excludedApps: settings.excludedApps,
+          audioScope: audioOnlyApp ? "app" : "mixer",
+          linuxSource: SOURCE_LABEL,
+          onlyApp: audioOnlyApp,
+        };
+      } catch (e) {
+        console.error("pipewire router unavailable, using system loopback:", e);
+        router.stop();
+      }
     }
     if (process.platform !== "win32") {
+      // Linux fallback: Chromium taps the default sink's monitor via PulseAudio
+      // (pipewire-pulse) — whole-system audio, no per-app selectivity. Works
+      // WITHOUT --enable-features=PulseaudioLoopbackForScreenShare (that flag
+      // only gates Chrome's picker checkbox): S3 verified on Fedora 44 /
+      // PipeWire 1.6 / KDE Wayland. macOS: CoreAudio tap.
       baseAudio = "loopback";
-      return { mixer: false, roots: [], excludedApps: [] };
+      return { mixer: false, roots: [], excludedApps: [], audioScope: "system" };
     }
     if (chosenSource && !chosenSource.isScreen) {
       // Window share → single include-mode capture (S1 CONFIRMED).
       appTarget = await windowProcessByTitle(chosenSource.name);
       if (appTarget) {
         baseAudio = { id: `applicationLoopback:${appTarget.pid}`, name: "App audio" };
-        return { mixer: false, roots: [], excludedApps: [] };
+        return { mixer: false, roots: [], excludedApps: [], audioScope: "app" };
       }
       baseAudio = "loopback";
-      return { mixer: false, roots: [], excludedApps: [] };
+      return { mixer: false, roots: [], excludedApps: [], audioScope: "system" };
     }
     // Screen share → per-app mixer.
     baseAudio = undefined; // mixer supplies the track; main gDM is video-only
     lastRoots = await listAudioRoots();
     mixerActive = true;
-    return { mixer: true, roots: lastRoots, excludedApps: settings.excludedApps };
+    return {
+      mixer: true,
+      roots: lastRoots,
+      excludedApps: settings.excludedApps,
+      audioScope: "mixer",
+    };
   };
 
   /** Real input event so follow-up getDisplayMedia calls carry activation. */
@@ -380,6 +437,28 @@ function main() {
     saveSettings();
     if (live && mixerActive)
       win?.webContents.send("audio:exclude-set", settings.excludedApps);
+    if (router?.running) router.setFilter(wantsApp);
+    updateTray();
+  };
+
+  /** Linux, live: switch between "all apps" and "only one app" instantly. */
+  const audioSourceItems = (): Electron.MenuItemConstructorOptions[] => [
+    {
+      label: "All apps (except muted)",
+      type: "radio",
+      checked: audioOnlyApp == null,
+      click: () => setOnlyApp(null),
+    },
+    ...lastRoots.map((r) => ({
+      label: `Only ${r.name}`,
+      type: "radio" as const,
+      checked: audioOnlyApp === r.name,
+      click: () => setOnlyApp(r.name),
+    })),
+  ];
+  const setOnlyApp = (name: string | null) => {
+    audioOnlyApp = name;
+    router?.setFilter(wantsApp);
     updateTray();
   };
 
@@ -407,6 +486,60 @@ function main() {
     return items;
   };
 
+  // ---------- actions (tray menu + live window share these) ----------
+  const setVideoMode = (key: VideoModeName) => {
+    settings.videoMode = key;
+    saveSettings();
+    if (live) win?.webContents.send("settings:video", key);
+    updateTray();
+  };
+  const setAudioPreset = (key: AudioPresetName) => {
+    settings.audioPreset = key;
+    saveSettings();
+    if (live) win?.webContents.send("settings:audio", key);
+    updateTray();
+  };
+  const setAudioMuted = (muted: boolean) => {
+    audioMuted = muted;
+    win?.webContents.send("audio:mute", audioMuted);
+    updateTray();
+  };
+  const copyLink = (withPin: boolean) =>
+    clipboard.writeText(
+      withPin && currentPin ? `${shareUrl} · PIN: ${currentPin}` : shareUrl,
+    );
+
+  /** Everything the live window renders; pushed on every change. */
+  const liveState = () => ({
+    live,
+    trayVisible,
+    shareUrl,
+    pin: currentPin,
+    hasAudio: liveHasAudio,
+    muted: audioMuted,
+    failed: failedCaptures,
+    viewers: viewerRows,
+    /** Per-app controls exist (Windows mixer / Linux router). */
+    perApp: mixerActive || !!router?.running,
+    /** "Only this app" is switchable live (Linux router). */
+    canOnly: !!router?.running,
+    apps: lastRoots.map((r) => r.name).filter((n) => !DISCORD_APPS.includes(n)),
+    discordMuted: discordMuted(),
+    onlyApp: audioOnlyApp,
+    excludedApps: settings.excludedApps,
+    videoMode: settings.videoMode,
+    audioPreset: settings.audioPreset,
+    videoModes: (Object.keys(VIDEO_LABELS) as VideoModeName[]).map((key) => ({
+      key,
+      label: VIDEO_LABELS[key],
+    })),
+    audioPresets: (Object.keys(AUDIO_LABELS) as AudioPresetName[]).map((key) => ({
+      key,
+      label: AUDIO_LABELS[key],
+    })),
+  });
+  const pushLive = () => win?.webContents.send("live:state", liveState());
+
   const settingsSubmenus = (): Electron.MenuItemConstructorOptions[] => [
     {
       label: "Video",
@@ -414,11 +547,7 @@ function main() {
         label: VIDEO_LABELS[key],
         type: "radio" as const,
         checked: settings.videoMode === key,
-        click: () => {
-          settings.videoMode = key;
-          saveSettings();
-          if (live) win?.webContents.send("settings:video", key);
-        },
+        click: () => setVideoMode(key),
       })),
     },
     {
@@ -427,16 +556,20 @@ function main() {
         label: AUDIO_LABELS[key],
         type: "radio" as const,
         checked: settings.audioPreset === key,
-        click: () => {
-          settings.audioPreset = key;
-          saveSettings();
-          if (live) win?.webContents.send("settings:audio", key);
-        },
+        click: () => setAudioPreset(key),
       })),
     },
     {
+      label: "Stream audio from",
+      visible: live && !!router?.running,
+      submenu: audioSourceItems(),
+    },
+    {
       label: "Audio exclusions",
-      visible: process.platform === "win32",
+      visible:
+        process.platform === "win32" ||
+        (process.platform === "linux" && (!live || !!router?.running)),
+      enabled: audioOnlyApp == null, // "only X" ignores exclusions
       submenu: exclusionItems(),
     },
     {
@@ -500,6 +633,7 @@ function main() {
   };
 
   const updateTray = () => {
+    pushLive(); // the live window mirrors the tray, tray or not
     if (!tray) return;
     tray.setImage(trayIcon());
     tray.setToolTip(
@@ -515,22 +649,18 @@ function main() {
           ? [
               ...viewerHeader(),
               { type: "separator" },
-              { label: "Copy link", click: () => clipboard.writeText(shareUrl) },
+              { label: "Copy link", click: () => copyLink(false) },
               {
                 label: "Copy link + PIN",
                 visible: currentPin != null,
-                click: () =>
-                  clipboard.writeText(`${shareUrl} · PIN: ${currentPin}`),
+                click: () => copyLink(true),
               },
               {
                 label: "Mute audio",
                 type: "checkbox",
                 checked: audioMuted,
                 visible: liveHasAudio,
-                click: (item) => {
-                  audioMuted = item.checked;
-                  win?.webContents.send("audio:mute", audioMuted);
-                },
+                click: (item) => setAudioMuted(item.checked),
               },
               {
                 label: `⚠ No audio from: ${failedCaptures.join(", ")}`,
@@ -572,7 +702,10 @@ function main() {
 
   const quit = () => {
     if (live) requestStop();
-    setTimeout(() => app.exit(0), 400);
+    setTimeout(() => {
+      router?.stop(); // after the renderer stopped its capture track
+      app.exit(0);
+    }, 400);
   };
 
   const openPicker = () => {
@@ -596,12 +729,16 @@ function main() {
     win.once("ready-to-show", () => win?.show());
     win.on("close", (e) => {
       if (live) {
-        e.preventDefault();
-        win?.hide(); // closing must not kill the stream
+        e.preventDefault(); // closing must not kill the stream
+        // Hidden is only safe when a tray icon can bring it back.
+        if (trayVisible) win?.hide();
+        else win?.minimize();
       }
     });
     win.on("closed", () => {
       win = null;
+      // No tray = no other way back in: closing the window means quit.
+      if (!trayVisible && !live) quit();
     });
     if (PICKER_VITE_DEV_SERVER_URL) {
       void win.loadURL(PICKER_VITE_DEV_SERVER_URL);
@@ -614,6 +751,9 @@ function main() {
 
   // ---------- IPC ----------
   ipcMain.handle("picker:list", async () => {
+    // On Wayland getSources() would pop the portal dialog right here, before
+    // the user has seen the picker; the renderer shows one button instead.
+    if (IS_WAYLAND) return [];
     const sources = await desktopCapturer.getSources({
       types: ["screen", "window"],
       thumbnailSize: { width: 360, height: 202 },
@@ -632,8 +772,13 @@ function main() {
 
   ipcMain.handle(
     "picker:choose",
-    async (_e, source: { id: string; name: string; isScreen: boolean }) => {
+    async (
+      _e,
+      source: { id: string; name: string; isScreen: boolean },
+      onlyApp?: string | null,
+    ) => {
       chosenSource = source;
+      if (onlyApp !== undefined) audioOnlyApp = onlyApp;
       return armForChoice();
     },
   );
@@ -648,7 +793,18 @@ function main() {
   ipcMain.handle("audio:loopback", () => {
     baseAudio = "loopback";
     mixerActive = false;
+    router?.stop();
   });
+
+  ipcMain.on("audio:release", () => {
+    router?.stop();
+    audioOnlyApp = null;
+  });
+
+  /** Linux: apps currently playing audio, for the picker's source menu. */
+  ipcMain.handle("audio:apps", async () =>
+    router ? (await listStreamApps()).map((a) => a.name) : [],
+  );
 
   ipcMain.on("audio:capture-failed", (_e, names: string[]) => {
     failedCaptures = names;
@@ -692,7 +848,40 @@ function main() {
 
   ipcMain.handle("app:server-url", () => SERVER_URL);
 
-  ipcMain.on("picker:hide", () => win?.hide());
+  ipcMain.handle("app:platform", () => ({
+    platform: process.platform,
+    wayland: IS_WAYLAND,
+  }));
+
+  ipcMain.on("picker:hide", () => {
+    if (trayVisible) win?.hide();
+  });
+
+  ipcMain.handle("live:state", () => liveState());
+
+  type LiveAction =
+    | { t: "copy"; pin: boolean }
+    | { t: "mute"; v: boolean }
+    | { t: "only"; app: string | null }
+    | { t: "exclude"; app: string; v: boolean }
+    | { t: "video"; v: VideoModeName }
+    | { t: "audioPreset"; v: AudioPresetName };
+  ipcMain.on("live:action", (_e, a: LiveAction) => {
+    switch (a.t) {
+      case "copy":
+        return copyLink(a.pin);
+      case "mute":
+        return setAudioMuted(a.v);
+      case "only":
+        return setOnlyApp(a.app);
+      case "exclude":
+        return setAppExcluded(a.app, a.v);
+      case "video":
+        return setVideoMode(a.v);
+      case "audioPreset":
+        return setAudioPreset(a.v);
+    }
+  });
 
   ipcMain.on("settings:share-audio", (_e, v: boolean) => {
     settings.shareAudio = v;
@@ -712,7 +901,7 @@ function main() {
       );
       updateTray();
       startPolling();
-      win?.hide();
+      if (trayVisible) win?.hide(); // else the window IS the controls
       balloon(
         "You're live",
         info.pin
@@ -735,12 +924,32 @@ function main() {
     audioMuted = false;
     failedCaptures = [];
     balloonedFailures.clear();
+    // The renderer stopped its capture before reporting: unloading the
+    // source now can't make Chromium fail over to another input (the mic).
+    router?.stop();
+    audioOnlyApp = null;
+    lastRoots = [];
     stopPolling();
     updateTray();
-    win?.close();
+    if (trayVisible) win?.close(); // else the renderer returns to the picker
   });
 
   app.on("second-instance", () => openPicker());
+
+  if (router) {
+    router.onApps = (apps) => {
+      const names = apps.map((a) => a.name);
+      if (names.join() === lastRoots.map((r) => r.name).join()) return;
+      lastRoots = names.map((name) => ({ pid: 0, name }));
+      updateTray(); // mute / "only" lists follow the live app set
+    };
+    for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+      process.on(sig, () => {
+        router.stop();
+        app.exit(0);
+      });
+    }
+  }
 
   void app.whenReady().then(() => {
     session.defaultSession.setDisplayMediaRequestHandler((_request, callback) => {
@@ -759,6 +968,32 @@ function main() {
         } as unknown as Parameters<typeof callback>[0]);
         return;
       }
+      if (IS_WAYLAND) {
+        // The portal dialog IS the picker: getSources() shows it and returns
+        // exactly the one source the user chose (empty on cancel).
+        const audio = baseAudio;
+        desktopCapturer
+          .getSources({ types: ["screen", "window"] })
+          .then((sources) => {
+            const src = sources[0];
+            if (!src) return callback({} as Parameters<typeof callback>[0]);
+            chosenSource = {
+              id: src.id,
+              name: src.name,
+              isScreen: src.id.startsWith("screen:"),
+            };
+            const grant: Record<string, unknown> = {
+              video: { id: src.id, name: src.name },
+            };
+            if (audio) grant.audio = audio;
+            callback(grant as unknown as Parameters<typeof callback>[0]);
+          })
+          .catch((e) => {
+            console.error("portal capture failed:", e);
+            callback({} as Parameters<typeof callback>[0]);
+          });
+        return;
+      }
       // NEVER pass an `audio` key with an undefined value: Electron treats the
       // key's presence as "audio provided", fails to convert undefined, and
       // rejects the whole capture with "Invalid capture constraints"
@@ -775,12 +1010,51 @@ function main() {
       tray = new Tray(trayIcon());
       updateTray();
       console.log("easyscreenshare desktop ready — tray installed");
+      if (process.platform === "linux") void verifyTray();
     } catch (e) {
       console.error("tray unavailable:", e);
       console.log("easyscreenshare desktop ready — NO tray host");
+      trayVisible = false;
       openPicker();
     }
   });
+
+  /** Linux: did a StatusNotifierWatcher actually accept our icon? Plasma 6
+   * answers Electron 44's "service/path" registration with success and then
+   * drops it (verified 2026-11-08, Plasma on Fedora 44) — Tray construction
+   * succeeding proves nothing. Chromium's SNI service name embeds our pid. */
+  const verifyTray = async () => {
+    const needle = `StatusNotifierItem-${process.pid}-`;
+    const registered = (iface: string) =>
+      new Promise<boolean>((resolve) => {
+        execFile(
+          "gdbus",
+          [
+            "call", "--session", "--dest", iface,
+            "--object-path", "/StatusNotifierWatcher",
+            "--method", "org.freedesktop.DBus.Properties.Get",
+            iface, "RegisteredStatusNotifierItems",
+          ],
+          { timeout: 2000 },
+          (err, out) => resolve(!err && out.includes(needle)),
+        );
+      });
+    for (let i = 0; i < 8; i++) {
+      await new Promise((r) => setTimeout(r, 500));
+      if (
+        (await registered("org.kde.StatusNotifierWatcher")) ||
+        (await registered("org.freedesktop.StatusNotifierWatcher"))
+      ) {
+        trayVisible = true;
+        console.log("tray icon registered with the desktop");
+        return;
+      }
+    }
+    trayVisible = false;
+    console.log("tray icon NOT shown by the desktop — window mode");
+    openPicker();
+    pushLive();
+  };
 
   app.on("window-all-closed", () => {
     /* tray apps keep running with zero windows */

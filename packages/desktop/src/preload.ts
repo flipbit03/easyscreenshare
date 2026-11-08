@@ -20,16 +20,69 @@ export interface ArmResult {
   mixer: boolean;
   roots: AudioRoot[];
   excludedApps: string[];
+  /** What the stream audio contains: per-app mix, one app, whole system, or none. */
+  audioScope: "none" | "system" | "app" | "mixer";
+  /** Linux router: input device label to capture with getUserMedia. */
+  linuxSource?: string;
+  /** Linux router: the single app being streamed, if any. */
+  onlyApp?: string | null;
 }
 
+export interface ViewerRow {
+  identity: string;
+  name: string;
+  conn: string;
+  joinedAt: number;
+}
+
+/** Main's live snapshot — the window renders its controls from this. */
+export interface LiveState {
+  live: boolean;
+  trayVisible: boolean;
+  shareUrl: string;
+  pin: string | null;
+  hasAudio: boolean;
+  muted: boolean;
+  failed: string[];
+  viewers: ViewerRow[];
+  perApp: boolean;
+  canOnly: boolean;
+  apps: string[];
+  discordMuted: boolean;
+  onlyApp: string | null;
+  excludedApps: string[];
+  videoMode: string;
+  audioPreset: string;
+  videoModes: { key: string; label: string }[];
+  audioPresets: { key: string; label: string }[];
+}
+
+export type LiveAction =
+  | { t: "copy"; pin: boolean }
+  | { t: "mute"; v: boolean }
+  | { t: "only"; app: string | null }
+  | { t: "exclude"; app: string; v: boolean }
+  | { t: "video"; v: string }
+  | { t: "audioPreset"; v: string };
+
 const api = {
+  liveState: (): Promise<LiveState> => ipcRenderer.invoke("live:state"),
+  liveAction: (a: LiveAction) => ipcRenderer.send("live:action", a),
+  onLiveState: (cb: (s: LiveState) => void) => {
+    ipcRenderer.on("live:state", (_e, s) => cb(s));
+  },
   serverUrl: (): Promise<string> => ipcRenderer.invoke("app:server-url"),
+  /** Wayland = the xdg-desktop-portal dialog replaces our source grid. */
+  platform: (): Promise<{ platform: string; wayland: boolean }> =>
+    ipcRenderer.invoke("app:platform"),
   listSources: (): Promise<SourceInfo[]> => ipcRenderer.invoke("picker:list"),
-  chooseSource: (source: {
-    id: string;
-    name: string;
-    isScreen: boolean;
-  }): Promise<ArmResult> => ipcRenderer.invoke("picker:choose", source),
+  /** onlyApp (Linux): stream just this app; null = all apps; omitted = keep. */
+  chooseSource: (
+    source: { id: string; name: string; isScreen: boolean },
+    onlyApp?: string | null,
+  ): Promise<ArmResult> => ipcRenderer.invoke("picker:choose", source, onlyApp),
+  /** Linux: apps currently playing audio (normalized names). */
+  streamApps: (): Promise<string[]> => ipcRenderer.invoke("audio:apps"),
   armAudio: (pid: number): Promise<void> => ipcRenderer.invoke("audio:arm", pid),
   /** Mixer came up empty — re-arm the main capture for full system loopback. */
   armSystemLoopback: (): Promise<void> => ipcRenderer.invoke("audio:loopback"),
@@ -48,6 +101,8 @@ const api = {
   notifyLive: (info: { shareUrl: string; pin: string | null; hasAudio: boolean }) =>
     ipcRenderer.send("share:live", info),
   notifyStopped: () => ipcRenderer.send("share:stopped"),
+  /** A share failed to start: drop any audio routing set up for it. */
+  releaseAudio: () => ipcRenderer.send("audio:release"),
   hidePicker: () => ipcRenderer.send("picker:hide"),
   updateViewers: (
     rows: { identity: string; name: string; conn: string; joinedAt: number }[],

@@ -178,3 +178,101 @@ body {
 .audio-row input {
   accent-color: var(--accent);
 }
+
+/* Wayland: the portal dialog replaces the source grid */
+.portal-btn {
+  margin-top: 0.5rem;
+  padding: 0.9rem 1.6rem;
+  font-weight: 600;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.portal-btn:hover {
+  background: var(--accent);
+  filter: brightness(1.1);
+}
+
+/* Linux: "Audio from" selector */
+.audio-select {
+  margin-left: 0.6rem;
+  font: inherit;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.3rem 0.5rem;
+}
+.audio-select:disabled {
+  opacity: 0.5;
+}
+
+/* Live controls (window mode: the tray may not be visible) */
+.live-head h1 {
+  color: var(--accent);
+}
+.back-btn {
+  margin-top: 0.75rem;
+}
+.live-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.9rem;
+}
+.live-url {
+  flex: 1 1 18rem;
+  min-width: 0;
+  font: inherit;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.55rem 0.75rem;
+  user-select: text;
+}
+.live-pin {
+  margin-top: 0.6rem;
+  font-size: 1.1rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+.retry.danger {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.retry.danger:hover {
+  background: var(--accent);
+  color: #fff;
+}
+.retry.on {
+  border-color: var(--accent);
+  background: var(--panel-2);
+}
+.retry.small {
+  padding: 0.3rem 0.7rem;
+  font-size: 0.85rem;
+}
+.live-sec {
+  margin-top: 0.4rem;
+}
+.mute-list {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 1.25rem;
+}
+.viewer-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.92rem;
+  color: var(--text-2);
+}
+.live-head ~ .err {
+  margin-top: 0.6rem;
+  color: var(--accent);
+}
