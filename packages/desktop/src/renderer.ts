@@ -10,7 +10,12 @@ import {
   type PublishHandle,
 } from "@easyscreenshare/core";
 import { AppAudioMixer } from "./mixer";
-import type { ArmResult, EssBridge, SourceInfo } from "./preload";
+import type {
+  ArmResult,
+  EssBridge,
+  LiveState,
+  SourceInfo,
+} from "./preload";
 import "./picker.css";
 
 declare global {
@@ -50,6 +55,12 @@ const AUDIO_SUB: Record<ArmResult["audioScope"], string> = {
   mixer: "Audio: apps mixed",
 };
 
+/** Which screen the window shows; live state pushes re-render only "live". */
+let view: "picker" | "status" | "live" = "picker";
+let liveState: LiveState | null = null;
+/** "Audio: …" line for the live panel, set when the share starts/switches. */
+let audioSub = "";
+
 /** Linux: picker's "stream audio from" choice for the next share. */
 let onlyApp: string | null = null;
 
@@ -86,6 +97,7 @@ function h<K extends keyof HTMLElementTagNameMap>(
 /** mode "start" begins a new share; "switch" swaps the source of the live one. */
 async function renderPicker(mode: "start" | "switch" = "start") {
   const { platform, wayland } = await platformInfo;
+  view = "picker";
   app.replaceChildren();
   const head = h("header", "head");
   head.append(
@@ -103,6 +115,12 @@ async function renderPicker(mode: "start" | "switch" = "start") {
     ),
   );
   app.append(head);
+
+  if (mode === "switch") {
+    const back = h("button", "retry back-btn", "← Back to live controls");
+    back.addEventListener("click", () => renderLive());
+    head.append(back);
+  }
 
   if (mode === "start") {
     const nameRow = h("div", "name-row");
@@ -235,6 +253,7 @@ async function renderPicker(mode: "start" | "switch" = "start") {
 }
 
 function renderStatus(text: string, isError = false, sub?: string) {
+  view = "status";
   app.replaceChildren();
   const box = h("div", "status");
   box.append(h("p", isError ? "err" : undefined, text));
@@ -329,15 +348,13 @@ async function startShare(source: SourceInfo) {
       pin: sess.pin,
       hasAudio: handle.hasAudio,
     });
-    renderStatus(
-      "You're live — this window can stay hidden.",
-      false,
-      handle.hasAudio
-        ? audio.sub
-        : settings.shareAudio
-          ? "Audio: unavailable here — video only"
-          : "Audio: off",
-    );
+    audioSub = handle.hasAudio
+      ? audio.sub
+      : settings.shareAudio
+        ? "Audio: unavailable here — video only"
+        : "Audio: off";
+    liveState = await window.ess.liveState();
+    renderLive();
   } catch (e) {
     mixer?.stop();
     mixer = null;
@@ -386,9 +403,14 @@ async function switchSource(source: SourceInfo) {
       const appAudio = stream.getAudioTracks()[0];
       if (appAudio) await handle.replaceAudioTrack(appAudio);
     }
+    audioSub = audio.track || stream.getAudioTracks()[0] ? audio.sub : audioSub;
+    renderLive();
     window.ess.hidePicker();
   } catch (e) {
-    if (isCancel(e)) return void window.ess.hidePicker(); // keep the old source
+    if (isCancel(e)) {
+      renderLive(); // keep the old source
+      return void window.ess.hidePicker();
+    }
     renderStatus(e instanceof Error ? e.message : String(e), true);
   }
 }
@@ -470,9 +492,169 @@ async function stopShare() {
   mixer?.stop();
   mixer = null;
   session = null;
+  liveState = null;
   window.ess.notifyStopped();
+  void renderPicker(); // window-mode: straight back to the picker
 }
 
+const ago = (ts: number): string => {
+  const m = Math.floor(Math.max(0, Date.now() - ts) / 60000);
+  if (m < 1) return "just now";
+  if (m < 60) return `${m}m ago`;
+  return `${Math.floor(m / 60)}h${m % 60 ? ` ${m % 60}m` : ""} ago`;
+};
+
+/** Live controls — everything the tray menu offers, for desktops where the
+ * tray icon never shows (Plasma + Electron 44) and as a plain dashboard. */
+function renderLive() {
+  view = "live";
+  const s = liveState;
+  if (!s || !s.live) return void renderStatus("Going live…");
+  app.replaceChildren();
+
+  const head = h("header", "head live-head");
+  head.append(h("h1", undefined, "● Live"));
+  head.append(h("p", "sub", audioSub));
+  app.append(head);
+
+  // Link + PIN
+  const linkRow = h("div", "live-row");
+  const url = h("input", "live-url") as HTMLInputElement;
+  url.readOnly = true;
+  url.value = s.shareUrl;
+  url.addEventListener("focus", () => url.select());
+  const copy = h("button", "retry", "Copy link");
+  copy.addEventListener("click", () => {
+    window.ess.liveAction({ t: "copy", pin: false });
+    copy.textContent = "Copied ✓";
+  });
+  linkRow.append(url, copy);
+  if (s.pin) {
+    const copyPin = h("button", "retry", "Copy link + PIN");
+    copyPin.addEventListener("click", () => {
+      window.ess.liveAction({ t: "copy", pin: true });
+      copyPin.textContent = "Copied ✓";
+    });
+    linkRow.append(copyPin);
+  }
+  app.append(linkRow);
+  if (s.pin) app.append(h("p", "live-pin", `PIN: ${s.pin}`));
+
+  // Main actions
+  const actions = h("div", "live-row");
+  if (s.hasAudio) {
+    const mute = h("button", s.muted ? "retry on" : "retry", s.muted ? "🔇 Audio muted" : "🔊 Mute audio");
+    mute.addEventListener("click", () => window.ess.liveAction({ t: "mute", v: !s.muted }));
+    actions.append(mute);
+  }
+  const change = h("button", "retry", "Change what you're sharing…");
+  change.addEventListener("click", () => void renderPicker("switch"));
+  const stop = h("button", "retry danger", "Stop sharing");
+  stop.addEventListener("click", () => void stopShare());
+  actions.append(change, stop);
+  app.append(actions);
+  if (s.failed.length) {
+    app.append(h("p", "err", `⚠ No audio from: ${s.failed.join(", ")}`));
+  }
+
+  // Audio routing
+  if (s.hasAudio && s.perApp) {
+    const sec = h("section", "live-sec");
+    sec.append(h("div", "section-label", "Stream audio"));
+    if (s.canOnly) {
+      const row = h("label", "audio-row");
+      const sel = h("select", "audio-select") as HTMLSelectElement;
+      const opt = (value: string, text: string) => {
+        const o = h("option", undefined, text) as HTMLOptionElement;
+        o.value = value;
+        return o;
+      };
+      sel.append(opt("", "All apps (except muted)"));
+      const choices = ["discord", ...s.apps];
+      for (const a of choices) sel.append(opt(a, `Only ${a}`));
+      if (s.onlyApp && !choices.includes(s.onlyApp)) {
+        sel.append(opt(s.onlyApp, `Only ${s.onlyApp} (not playing)`));
+      }
+      sel.value = s.onlyApp ?? "";
+      sel.addEventListener("change", () =>
+        window.ess.liveAction({ t: "only", app: sel.value || null }),
+      );
+      row.append(h("span", undefined, "From"), sel);
+      sec.append(row);
+    }
+    const mutes = h("div", "mute-list");
+    const muteBox = (label: string, app: string, checked: boolean) => {
+      const l = h("label", "audio-row");
+      const cb = h("input") as HTMLInputElement;
+      cb.type = "checkbox";
+      cb.checked = checked;
+      cb.disabled = s.onlyApp != null; // "only X" ignores mutes
+      cb.addEventListener("change", () =>
+        window.ess.liveAction({ t: "exclude", app, v: cb.checked }),
+      );
+      l.append(cb, h("span", undefined, label));
+      mutes.append(l);
+    };
+    muteBox("Mute Discord", "discord", s.discordMuted);
+    for (const a of s.apps) muteBox(`Mute ${a}`, a, s.excludedApps.includes(a));
+    sec.append(mutes);
+    app.append(sec);
+  }
+
+  // Quality
+  const q = h("section", "live-sec");
+  q.append(h("div", "section-label", "Quality"));
+  const select = (
+    label: string,
+    opts: { key: string; label: string }[],
+    value: string,
+    onPick: (v: string) => void,
+  ) => {
+    const row = h("label", "audio-row");
+    const sel = h("select", "audio-select") as HTMLSelectElement;
+    for (const o of opts) {
+      const el = h("option", undefined, o.label) as HTMLOptionElement;
+      el.value = o.key;
+      sel.append(el);
+    }
+    sel.value = value;
+    sel.addEventListener("change", () => onPick(sel.value));
+    row.append(h("span", undefined, label), sel);
+    q.append(row);
+  };
+  select("Video", s.videoModes, s.videoMode, (v) =>
+    window.ess.liveAction({ t: "video", v }),
+  );
+  if (s.hasAudio) {
+    select("Audio", s.audioPresets, s.audioPreset, (v) =>
+      window.ess.liveAction({ t: "audioPreset", v }),
+    );
+  }
+  app.append(q);
+
+  // Viewers
+  const vs = h("section", "live-sec");
+  vs.append(h("div", "section-label", `Viewers (${s.viewers.length})`));
+  if (!s.viewers.length) vs.append(h("p", "substatus", "No viewers yet"));
+  for (const v of s.viewers) {
+    const row = h("div", "viewer-row");
+    row.append(h("span", undefined, `${v.name} · joined ${ago(v.joinedAt)} · ${v.conn}`));
+    const kick = h("button", "retry small", "Kick + New PIN");
+    kick.addEventListener("click", () => void kickByIdentity(v.identity));
+    row.append(kick);
+    vs.append(row);
+  }
+  app.append(vs);
+
+  if (s.trayVisible) {
+    app.append(h("p", "substatus", "You can close this window — the stream keeps running in the tray."));
+  }
+}
+
+window.ess.onLiveState((s) => {
+  liveState = s;
+  if (view === "live") renderLive();
+});
 window.ess.onStopRequested(() => void stopShare());
 window.ess.onKickViewer((identity) => void kickByIdentity(identity));
 window.ess.onSwitchSource(() => void renderPicker("switch"));

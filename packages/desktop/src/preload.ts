@@ -28,7 +28,49 @@ export interface ArmResult {
   onlyApp?: string | null;
 }
 
+export interface ViewerRow {
+  identity: string;
+  name: string;
+  conn: string;
+  joinedAt: number;
+}
+
+/** Main's live snapshot — the window renders its controls from this. */
+export interface LiveState {
+  live: boolean;
+  trayVisible: boolean;
+  shareUrl: string;
+  pin: string | null;
+  hasAudio: boolean;
+  muted: boolean;
+  failed: string[];
+  viewers: ViewerRow[];
+  perApp: boolean;
+  canOnly: boolean;
+  apps: string[];
+  discordMuted: boolean;
+  onlyApp: string | null;
+  excludedApps: string[];
+  videoMode: string;
+  audioPreset: string;
+  videoModes: { key: string; label: string }[];
+  audioPresets: { key: string; label: string }[];
+}
+
+export type LiveAction =
+  | { t: "copy"; pin: boolean }
+  | { t: "mute"; v: boolean }
+  | { t: "only"; app: string | null }
+  | { t: "exclude"; app: string; v: boolean }
+  | { t: "video"; v: string }
+  | { t: "audioPreset"; v: string };
+
 const api = {
+  liveState: (): Promise<LiveState> => ipcRenderer.invoke("live:state"),
+  liveAction: (a: LiveAction) => ipcRenderer.send("live:action", a),
+  onLiveState: (cb: (s: LiveState) => void) => {
+    ipcRenderer.on("live:state", (_e, s) => cb(s));
+  },
   serverUrl: (): Promise<string> => ipcRenderer.invoke("app:server-url"),
   /** Wayland = the xdg-desktop-portal dialog replaces our source grid. */
   platform: (): Promise<{ platform: string; wayland: boolean }> =>

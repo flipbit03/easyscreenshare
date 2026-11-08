@@ -131,6 +131,10 @@ function main() {
   const balloonedFailures = new Set<string>();
   /** Linux per-app routing; null elsewhere. */
   const router = process.platform === "linux" ? new PipeWireRouter() : null;
+  /** False when no tray icon is actually visible (no tray host, or Plasma
+   * dropping Electron 44's SNI registration): the window is then the only
+   * control surface, so it stays up while live instead of hiding. */
+  let trayVisible = process.platform !== "linux";
   /** Linux: stream ONLY this app (null = all apps minus exclusions). */
   let audioOnlyApp: string | null = null;
   const wantsApp = (name: string) =>
@@ -482,6 +486,60 @@ function main() {
     return items;
   };
 
+  // ---------- actions (tray menu + live window share these) ----------
+  const setVideoMode = (key: VideoModeName) => {
+    settings.videoMode = key;
+    saveSettings();
+    if (live) win?.webContents.send("settings:video", key);
+    updateTray();
+  };
+  const setAudioPreset = (key: AudioPresetName) => {
+    settings.audioPreset = key;
+    saveSettings();
+    if (live) win?.webContents.send("settings:audio", key);
+    updateTray();
+  };
+  const setAudioMuted = (muted: boolean) => {
+    audioMuted = muted;
+    win?.webContents.send("audio:mute", audioMuted);
+    updateTray();
+  };
+  const copyLink = (withPin: boolean) =>
+    clipboard.writeText(
+      withPin && currentPin ? `${shareUrl} · PIN: ${currentPin}` : shareUrl,
+    );
+
+  /** Everything the live window renders; pushed on every change. */
+  const liveState = () => ({
+    live,
+    trayVisible,
+    shareUrl,
+    pin: currentPin,
+    hasAudio: liveHasAudio,
+    muted: audioMuted,
+    failed: failedCaptures,
+    viewers: viewerRows,
+    /** Per-app controls exist (Windows mixer / Linux router). */
+    perApp: mixerActive || !!router?.running,
+    /** "Only this app" is switchable live (Linux router). */
+    canOnly: !!router?.running,
+    apps: lastRoots.map((r) => r.name).filter((n) => !DISCORD_APPS.includes(n)),
+    discordMuted: discordMuted(),
+    onlyApp: audioOnlyApp,
+    excludedApps: settings.excludedApps,
+    videoMode: settings.videoMode,
+    audioPreset: settings.audioPreset,
+    videoModes: (Object.keys(VIDEO_LABELS) as VideoModeName[]).map((key) => ({
+      key,
+      label: VIDEO_LABELS[key],
+    })),
+    audioPresets: (Object.keys(AUDIO_LABELS) as AudioPresetName[]).map((key) => ({
+      key,
+      label: AUDIO_LABELS[key],
+    })),
+  });
+  const pushLive = () => win?.webContents.send("live:state", liveState());
+
   const settingsSubmenus = (): Electron.MenuItemConstructorOptions[] => [
     {
       label: "Video",
@@ -489,11 +547,7 @@ function main() {
         label: VIDEO_LABELS[key],
         type: "radio" as const,
         checked: settings.videoMode === key,
-        click: () => {
-          settings.videoMode = key;
-          saveSettings();
-          if (live) win?.webContents.send("settings:video", key);
-        },
+        click: () => setVideoMode(key),
       })),
     },
     {
@@ -502,11 +556,7 @@ function main() {
         label: AUDIO_LABELS[key],
         type: "radio" as const,
         checked: settings.audioPreset === key,
-        click: () => {
-          settings.audioPreset = key;
-          saveSettings();
-          if (live) win?.webContents.send("settings:audio", key);
-        },
+        click: () => setAudioPreset(key),
       })),
     },
     {
@@ -583,6 +633,7 @@ function main() {
   };
 
   const updateTray = () => {
+    pushLive(); // the live window mirrors the tray, tray or not
     if (!tray) return;
     tray.setImage(trayIcon());
     tray.setToolTip(
@@ -598,22 +649,18 @@ function main() {
           ? [
               ...viewerHeader(),
               { type: "separator" },
-              { label: "Copy link", click: () => clipboard.writeText(shareUrl) },
+              { label: "Copy link", click: () => copyLink(false) },
               {
                 label: "Copy link + PIN",
                 visible: currentPin != null,
-                click: () =>
-                  clipboard.writeText(`${shareUrl} · PIN: ${currentPin}`),
+                click: () => copyLink(true),
               },
               {
                 label: "Mute audio",
                 type: "checkbox",
                 checked: audioMuted,
                 visible: liveHasAudio,
-                click: (item) => {
-                  audioMuted = item.checked;
-                  win?.webContents.send("audio:mute", audioMuted);
-                },
+                click: (item) => setAudioMuted(item.checked),
               },
               {
                 label: `⚠ No audio from: ${failedCaptures.join(", ")}`,
@@ -682,12 +729,16 @@ function main() {
     win.once("ready-to-show", () => win?.show());
     win.on("close", (e) => {
       if (live) {
-        e.preventDefault();
-        win?.hide(); // closing must not kill the stream
+        e.preventDefault(); // closing must not kill the stream
+        // Hidden is only safe when a tray icon can bring it back.
+        if (trayVisible) win?.hide();
+        else win?.minimize();
       }
     });
     win.on("closed", () => {
       win = null;
+      // No tray = no other way back in: closing the window means quit.
+      if (!trayVisible && !live) quit();
     });
     if (PICKER_VITE_DEV_SERVER_URL) {
       void win.loadURL(PICKER_VITE_DEV_SERVER_URL);
@@ -802,7 +853,35 @@ function main() {
     wayland: IS_WAYLAND,
   }));
 
-  ipcMain.on("picker:hide", () => win?.hide());
+  ipcMain.on("picker:hide", () => {
+    if (trayVisible) win?.hide();
+  });
+
+  ipcMain.handle("live:state", () => liveState());
+
+  type LiveAction =
+    | { t: "copy"; pin: boolean }
+    | { t: "mute"; v: boolean }
+    | { t: "only"; app: string | null }
+    | { t: "exclude"; app: string; v: boolean }
+    | { t: "video"; v: VideoModeName }
+    | { t: "audioPreset"; v: AudioPresetName };
+  ipcMain.on("live:action", (_e, a: LiveAction) => {
+    switch (a.t) {
+      case "copy":
+        return copyLink(a.pin);
+      case "mute":
+        return setAudioMuted(a.v);
+      case "only":
+        return setOnlyApp(a.app);
+      case "exclude":
+        return setAppExcluded(a.app, a.v);
+      case "video":
+        return setVideoMode(a.v);
+      case "audioPreset":
+        return setAudioPreset(a.v);
+    }
+  });
 
   ipcMain.on("settings:share-audio", (_e, v: boolean) => {
     settings.shareAudio = v;
@@ -822,7 +901,7 @@ function main() {
       );
       updateTray();
       startPolling();
-      win?.hide();
+      if (trayVisible) win?.hide(); // else the window IS the controls
       balloon(
         "You're live",
         info.pin
@@ -852,7 +931,7 @@ function main() {
     lastRoots = [];
     stopPolling();
     updateTray();
-    win?.close();
+    if (trayVisible) win?.close(); // else the renderer returns to the picker
   });
 
   app.on("second-instance", () => openPicker());
@@ -931,12 +1010,51 @@ function main() {
       tray = new Tray(trayIcon());
       updateTray();
       console.log("easyscreenshare desktop ready — tray installed");
+      if (process.platform === "linux") void verifyTray();
     } catch (e) {
       console.error("tray unavailable:", e);
       console.log("easyscreenshare desktop ready — NO tray host");
+      trayVisible = false;
       openPicker();
     }
   });
+
+  /** Linux: did a StatusNotifierWatcher actually accept our icon? Plasma 6
+   * answers Electron 44's "service/path" registration with success and then
+   * drops it (verified 2026-11-08, Plasma on Fedora 44) — Tray construction
+   * succeeding proves nothing. Chromium's SNI service name embeds our pid. */
+  const verifyTray = async () => {
+    const needle = `StatusNotifierItem-${process.pid}-`;
+    const registered = (iface: string) =>
+      new Promise<boolean>((resolve) => {
+        execFile(
+          "gdbus",
+          [
+            "call", "--session", "--dest", iface,
+            "--object-path", "/StatusNotifierWatcher",
+            "--method", "org.freedesktop.DBus.Properties.Get",
+            iface, "RegisteredStatusNotifierItems",
+          ],
+          { timeout: 2000 },
+          (err, out) => resolve(!err && out.includes(needle)),
+        );
+      });
+    for (let i = 0; i < 8; i++) {
+      await new Promise((r) => setTimeout(r, 500));
+      if (
+        (await registered("org.kde.StatusNotifierWatcher")) ||
+        (await registered("org.freedesktop.StatusNotifierWatcher"))
+      ) {
+        trayVisible = true;
+        console.log("tray icon registered with the desktop");
+        return;
+      }
+    }
+    trayVisible = false;
+    console.log("tray icon NOT shown by the desktop — window mode");
+    openPicker();
+    pushLive();
+  };
 
   app.on("window-all-closed", () => {
     /* tray apps keep running with zero windows */
